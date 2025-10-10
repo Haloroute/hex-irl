@@ -1,0 +1,13 @@
+markdown-it-py
+matplotlib
+mdurl
+numpy
+pandas
+pygame
+Pygments
+python-dateutil
+pytz
+rich
+six
+trueskill
+tzdata
