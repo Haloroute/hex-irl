@@ -189,7 +189,7 @@ class HexEnv(EnvBase):
             mask=(self.valid_board.flatten() == 1) # (max_board_size ** 2)
         )
         self.reward_spec = UnboundedContinuous(
-            shape=(2,),
+            shape=(1,),
             device=device,
             dtype=torch.float32
         ) # Reward for both players
@@ -200,7 +200,7 @@ class HexEnv(EnvBase):
         current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
         # valid_move: Tensor = self.valid_board.float() # All valid moves at the start
         done: Tensor = torch.tensor(False, dtype=torch.bool) # Game not done
-        reward: Tensor = torch.tensor([0.0, 0.0], dtype=torch.float32) # No reward at the start for both players
+        reward: Tensor = torch.tensor([0.0], dtype=torch.float32) # No reward at the start
 
         # Create fresh observation, mask, done, reward
         fresh_action: Tensor = torch.tensor(0, dtype=torch.long) # Placeholder action
@@ -241,7 +241,6 @@ class HexEnv(EnvBase):
 
         # Extract current state from observation
         current_player: int = int(observation[..., 0, 0, 2].item()) # 0: player 0 (red), 1: player 1 (blue)
-        reward: Tensor = torch.tensor([0.0, 0.0], dtype=torch.float32, device=self.device) # Initialize reward for both players
 
         # Validate action
         is_valid = (
@@ -264,10 +263,10 @@ class HexEnv(EnvBase):
 
             # Check for win condition (placeholder logic)
             if self._check_done(observation, current_player):
-                reward[current_player] = 1.0 # Reward for winning
-                reward[1 - current_player] = -1.0 # Penalty for losing
+                reward: Tensor = torch.tensor([1.0 * (1 - current_player) - 1.0 * current_player], dtype=torch.float32, device=self.device) # Single reward for the current player (+1 if player 0 wins, -1 if player 1 wins)
                 done = torch.tensor(True, dtype=torch.bool) # Game done
             else:
+                reward: Tensor = torch.tensor([0.0], dtype=torch.float32, device=self.device) # Initialize reward
                 done = torch.tensor(False, dtype=torch.bool) # Game not done
 
                 # Switch player
@@ -301,13 +300,10 @@ class HexEnv(EnvBase):
         return new_tensordict
 
     def _check_done(self, observation: Tensor, current_player: int) -> bool:
-        board_1 = (observation[..., 0] == 1).float() # Player 0 pieces
-        board_2 = (observation[..., 1] == 1).float() # Player 1 pieces
-
         def dfs(board, start_positions, target_condition, directions):
             visited = torch.zeros((self.board_size, self.board_size), dtype=torch.bool)
             for start in start_positions:
-                if board[start] != 0 and not visited[start]:
+                if board[start] == 1 and not visited[start]:
                     stack = [start]
                     visited[start] = True
                     while stack:
@@ -321,20 +317,21 @@ class HexEnv(EnvBase):
                                 stack.append((nr, nc))
             return False
 
-        # Use DFS to check if player 1 (red) has connected top to bottom
-        if current_player == 1:
-            directions = [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]
+        directions = [(-1,0), (1,0), (0,-1), (0,1), (1,-1), (-1,1)] # 6 possible directions in a hex grid
+        # Use DFS to check if player 0 (red) has connected top to bottom
+        if current_player == 0:
+            board = (observation[..., 0] == 1)[..., :self.board_size, :self.board_size] # Player 0 pieces
             start_positions = [(0, col) for col in range(self.board_size)]
             target_condition = lambda r, c: r == self.board_size - 1
-            if dfs(board_1, start_positions, target_condition, directions):
+            if dfs(board, start_positions, target_condition, directions):
                 return True
 
-        # Use DFS to check if player 2 (blue) has connected left to right
+        # Use DFS to check if player 1 (blue) has connected left to right
         else:
-            directions = [(-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0)]
+            board = (observation[..., 1] == 1)[..., :self.board_size, :self.board_size] # Player 1 pieces
             start_positions = [(row, 0) for row in range(self.board_size)]
             target_condition = lambda r, c: c == self.board_size - 1
-            if dfs(board_2, start_positions, target_condition, directions):
+            if dfs(board, start_positions, target_condition, directions):
                 return True
 
         return False # No winner yet
