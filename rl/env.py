@@ -21,115 +21,6 @@ N_CHANNEL = 4 # Number of channels for the observation (Red, Blue, Current Playe
 MAX_BOARD_SIZE = 32 # Maximum board size for the Hex game
 SWAP_RULE = False # Whether to use the swap rule in the Hex game
 
-# class CategoricalNd(Categorical):
-#     """
-#     A custom TensorSpec that behaves like Categorical but works in N-D and includes a mask to prevent unwanted choices.
-#     The mask is a boolean tensor with the same shape as the output tensor, where True indicates valid values.
-#     """
-#     def __init__(self, 
-#                  n: int, # Number of categories
-#                  d_n: int, # Number of categorical dimensions
-#                  shape: torch.Size = torch.Size(), # Shape of batch dimensions
-#                  mask: Tensor | None = None, # Mask tensor with the same shape as the full output shape (batch + categorical)
-#                  device: torch.device = 'cpu', # Device for the tensors
-#                  dtype: torch.dtype = torch.long):
-#         # Store parameters
-#         assert n >= 1, "n must be at least 1 for N-D categorical."
-#         assert d_n >= 2, "d_n must be at least 2 for N-D categorical. For 1D categorical, use the standard Categorical spec."
-#         # self.n: int = n
-#         self.d_n: int = d_n
-#         self.batch_shape: torch.Size = shape
-#         # self.device: torch.device = device
-#         # self.dtype: torch.dtype = dtype
-#         self.categorical_shape: torch.Size = torch.Size((d_n,)) # (d_n,)
-#         self.mask_shape: torch.Size = torch.Size(d_n * [n]) # (n, n, ..., n) repeated d_n times
-#         self.batch_categorical_shape: torch.Size = self.batch_shape + self.categorical_shape # Full shape including batches and categories
-#         self.batch_mask_shape: torch.Size = self.batch_shape + self.mask_shape # Full shape including batches and mask
-
-#         # Initialize the mask
-#         if mask is not None and not isinstance(mask, (Tensor, type(None))): # Convert to tensor if not already
-#             try:
-#                 mask = torch.tensor(mask, device=device, dtype=torch.bool)
-#             except Exception as e:
-#                 raise ValueError(f"Failed to convert mask to tensor: {e}")
-
-#         if mask is not None: # Validate and set the mask
-#             if mask.shape == self.batch_mask_shape: # No need to expand batch dimensions
-#                 self.mask_nd = mask.to(device=device, dtype=torch.bool).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             elif mask.shape == self.mask_shape: # Only categorical dimensions, expand batch dimensions
-#                 self.mask_nd = mask.to(device=device, dtype=torch.bool).expand(self.batch_mask_shape).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             elif mask.shape == self.batch_shape: # Only batch dimensions, expand categorical dimensions
-#                 self.mask_nd = mask.to(device=device, dtype=torch.bool).expand(self.batch_mask_shape).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             else:
-#                 raise ValueError(
-#                     f"Mask shape {mask.shape} is incompatible with full shape {self.batch_mask_shape}, categorical shape {self.categorical_shape}, or batch shape {self.batch_shape}."
-#                 )
-#         else: # Default for None mask: all True
-#             self.mask_nd = torch.ones(self.batch_mask_shape, device=device, dtype=torch.bool) # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-
-#         # Call the parent constructor with adjusted parameters
-#         super().__init__(n, self.batch_categorical_shape, device, dtype) # Don't use mask in parent class
-
-#     def __repr__(self):
-#         return f"CategoricalNd(n={self.n}, d_n={self.d_n}, batch shape={self.batch_shape}, categorical shape={self.categorical_shape}, mask shape={self.mask_shape})"
-
-#     def cardinality(self): # Count only valid positions
-#         return self.mask.sum().item()
-
-#     def is_in(self, val: Tensor) -> bool: # Check both bounds and mask
-#         # First check if val is in the bounded space using parent method
-#         in_bounds: bool = super().is_in(val)
-#         if not in_bounds:
-#             return False
-
-#         # Check the shape first
-#         if val.shape != self.batch_categorical_shape:
-#             return False
-
-#         # After the bounds check, val tensor has the same shape as self.batch_categorical_shape (i.e., batch_shape + (d_n,)). Now check the mask. 
-#         # For each N-D categorical (the last dimensions, contains (d_n)), we need to check if the corresponding position in the mask is True.
-#         # Which means we need to convert the N-D categorical indices to a flat index in the mask.
-#         # Example: if n=3, d_n=2, shape=(), and val[..., 0]=2, val[..., 1]=1, then the corresponding position in the mask is (2, 1) in a 3x3 grid.
-#         # We can achieve this by using advanced indexing.
-#         # Create a grid of indices for the categorical dimensions
-#         grid = torch.meshgrid(*[torch.arange(self.n, device=val.device) for _ in range(self.d_n)], indexing='ij')
-#         flat_indices = sum((grid[i] == val[..., i].unsqueeze(-1)).long() * (self.n ** i) for i in range(self.d_n))
-#         # Now flat_indices has the same shape as val, and each position corresponds to a position in the mask
-#         # We can use this to index into the mask
-#         return (self.mask_nd[flat_indices]).all().item() != 0 # If all position is True in the mask, return True. Else return False.
-
-#     # def rand(self, shape=None) -> Tensor: # Override to respect the mask
-#     #     # Sample from the bounded space, but set masked positions to some default (e.g., low)
-#     #     sample = super().rand(shape)
-#     #     if shape is None:
-#     #         shape = self.shape
-#     #     mask_expanded = self.mask.expand(shape + self.mask.shape[len(shape):]) if len(shape) > len(self.mask.shape) else self.mask
-#     #     sample = torch.where(mask_expanded, sample, self.low)
-#     #     return sample
-
-#     def update_mask(self, new_mask: Tensor | None = None):
-#         # Initialize the mask
-#         if new_mask is not None and not isinstance(new_mask, (Tensor, type(None))): # Convert to tensor if not already
-#             try:
-#                 new_mask = torch.tensor(new_mask, device=self.device, dtype=torch.bool)
-#             except Exception as e:
-#                 raise ValueError(f"Failed to convert mask to tensor: {e}")
-
-#         if new_mask is not None: # Validate and set the mask
-#             if new_mask.shape == self.batch_mask_shape: # No need to expand batch dimensions
-#                 self.mask_nd = new_mask.to(device=self.device, dtype=torch.bool).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             elif new_mask.shape == self.mask_shape: # Only categorical dimensions, expand batch dimensions
-#                 self.mask_nd = new_mask.to(device=self.device, dtype=torch.bool).expand(self.batch_mask_shape).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             elif new_mask.shape == self.batch_shape: # Only batch dimensions, expand categorical dimensions
-#                 self.mask_nd = new_mask.to(device=self.device, dtype=torch.bool).expand(self.batch_mask_shape).clone() # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-#             else:
-#                 raise ValueError(
-#                     f"Mask shape {new_mask.shape} is incompatible with full shape {self.batch_mask_shape}, categorical shape {self.categorical_shape}, or batch shape {self.batch_shape}."
-#                 )
-#         else: # Default for None mask: all True
-#             self.mask_nd = torch.ones(self.batch_mask_shape, device=self.device, dtype=torch.bool) # (batch_shape, d_n, d_n, ..., d_n) with n times d_n
-
-
 class HexEnv(EnvBase):
     def __init__(self, 
                  board_size: int,
@@ -182,8 +73,10 @@ class HexEnv(EnvBase):
             )
         })
         self.action_spec = Categorical(
-            n=self.max_board_size ** 2, 
-            # Number of discrete actions for each side of the board. Scalar
+            n=self.max_board_size ** 2,
+            # Number of discrete actions for each side of the board
+            shape=(1,),
+            # (1,) because action is a scalar representing the flat index of the board
             device=self.device,
             dtype=torch.long,
             mask=(self.valid_board.flatten() == 1) # (max_board_size ** 2)
@@ -196,18 +89,18 @@ class HexEnv(EnvBase):
 
     def _reset(self, tensordict: TensorDict | None = None, **kwargs) -> TensorDict:
         # Initialize a fresh board
-        board: Tensor = torch.full((self.max_board_size, self.max_board_size), -1, dtype=torch.long) # -1: empty, 0: player 0 (red), 1: player 1 (blue)
-        current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
+        board: Tensor = torch.full((self.max_board_size, self.max_board_size), -1, dtype=torch.long, device=self.device) # -1: empty, 0: player 0 (red), 1: player 1 (blue)
+        # current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
         # valid_move: Tensor = self.valid_board.float() # All valid moves at the start
-        done: Tensor = torch.tensor(False, dtype=torch.bool) # Game not done
-        reward: Tensor = torch.tensor([0.0], dtype=torch.float32) # No reward at the start
+        done: Tensor = torch.tensor(False, dtype=torch.bool, device=self.device) # Game not done
+        reward: Tensor = torch.tensor([0.0], dtype=torch.float32, device=self.device) # No reward at the start
 
         # Create fresh observation, mask, done, reward
-        fresh_action: Tensor = torch.tensor(0, dtype=torch.long) # Placeholder action
-        fresh_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float32) # (max_board_size, max_board_size, n_channel)
+        fresh_action: Tensor = torch.tensor([0], dtype=torch.long, device=self.device) # Placeholder action
+        fresh_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float32, device=self.device) # (max_board_size, max_board_size, n_channel)
         fresh_observation[..., 0] = (board == 0).float() # Red pieces channel
         fresh_observation[..., 1] = (board == 1).float() # Blue pieces channel
-        fresh_observation[..., 2] = current_player # Current player channel
+        fresh_observation[..., 2] = 0 # 0: player 0 (red), 1: player 1 (blue)
         fresh_observation[..., -1] = self.valid_board.clone().float() # (max_board_size, max_board_size) Playable board mask
         fresh_mask: Tensor = self.valid_board.clone().bool() # (max_board_size ** 2) Valid move mask
         fresh_done: Tensor = done # Not done
@@ -223,7 +116,7 @@ class HexEnv(EnvBase):
             "mask": fresh_mask,
             "done": fresh_done,
             "reward": fresh_reward
-        })
+        }, device=self.device)
 
         return fresh_tensordict
 
@@ -273,7 +166,7 @@ class HexEnv(EnvBase):
                 current_player = 1 - current_player # Switch between 0 and 1
 
             # Update observation, mask
-            new_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float) # (max_board_size, max_board_size, n_channel)
+            new_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float, device=self.device) # (max_board_size, max_board_size, n_channel)
             new_observation[..., 0] = observation[..., 0] # Red pieces channel
             new_observation[..., 1] = observation[..., 1] # Blue pieces channel
             new_observation[..., 2] = float(current_player) # Current player channel
@@ -295,7 +188,7 @@ class HexEnv(EnvBase):
             "mask": new_mask,
             "done": new_done,
             "reward": new_reward
-        })
+        }, device=self.device)
 
         return new_tensordict
 
@@ -337,6 +230,5 @@ class HexEnv(EnvBase):
         return False # No winner yet
 
     def _set_seed(self, seed: int) -> None:
-        super()._set_seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)

@@ -2,6 +2,7 @@ import torch
 
 import torch.nn as nn
 
+from tensordict import TensorDict
 from torch import Tensor
 
 
@@ -60,7 +61,8 @@ class TransformerQL(nn.Module):
                  d_input: int,
                  n_heads: int = 8,
                  d_ff: int = 2048,
-                 dropout: float = 0.1):
+                 dropout: float = 0.1,
+                 output_flatten: bool = True):
         """Args:
             conv_layers: List of tuples (out_channels, kernel_size) for each conv layer.
                 Note that, in_channels is inferred from the previous layer's out_channels (d_input for the first layer).
@@ -71,13 +73,16 @@ class TransformerQL(nn.Module):
             dropout: Dropout rate.
         """
         super(TransformerQL, self).__init__()
+        self.output_flatten = output_flatten
         self.d_encoder: int = conv_layers[-1][0] # Last conv layer's out_channels as d_model
         self.conv = nn.Sequential(*[
             SkipConnection(
                 nn.Sequential(
                     HexConv2d(conv_layers[i-1][0] if i > 0 else d_input, conv_layers[i][0], conv_layers[i][1]),
+                    nn.BatchNorm2d(conv_layers[i][0]),
                     nn.GELU(),
-                    HexConv2d(conv_layers[i][0], conv_layers[i][0], conv_layers[i][1])
+                    HexConv2d(conv_layers[i][0], conv_layers[i][0], conv_layers[i][1]),
+                    nn.BatchNorm2d(conv_layers[i][0]),
                 ),
                 nn.Identity() if conv_layers[i][0] == conv_layers[i-1][0] # Skip connection (identity)
                 else HexConv2d(conv_layers[i-1][0] if i > 0 else d_input, conv_layers[i][0], 1) # Combine with Conv2d (kernel_size = 1) for channel adjustment
@@ -97,7 +102,7 @@ class TransformerQL(nn.Module):
         )
         self.projection = nn.Linear(self.d_encoder, 1)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, tensordict: TensorDict | None = None) -> Tensor:
         """Args:
             x: Input tensor of shape (N, H, W, C) where
                N = batch size, H = height, W = width, C = channels (d_input).
@@ -111,4 +116,47 @@ class TransformerQL(nn.Module):
         x = x.view(batch_size, -1, self.d_encoder) # (N, H*W, d_encoder)
         x = self.encoder(x) # (N, H*W, d_encoder)
         x = self.projection(x) # (N, H*W, 1)
-        return x.view(batch_size, height, width) # (N, H, W)
+        if self.output_flatten:
+            return x.view(batch_size, -1) # (N, H*W)
+        else:
+            return x.view(batch_size, height, width) # (N, H, W)
+
+
+class TurnWrapper(nn.Module):
+    """
+    A custom policy for Hex that wraps a DQN.
+    - If it's Player 0's turn, it maximizes the Q-value.
+    - If it's Player 1's turn, it minimizes the Q-value.
+    It always respects the action mask.
+    """
+    def __init__(self, dqn_network: nn.Module):
+        super().__init__()
+        self.dqn_network = dqn_network
+
+    def forward(self, x: Tensor, tensordict: TensorDict | None = None) -> Tensor:
+        # x: (N, H, W, C)
+        if x.dim() == 3:
+            x = x.unsqueeze(0) # Add batch dimension if missing
+        batch_size = x.size(0)
+        # Step 1: Get the raw Q-values from your network
+        mask = ~(x[..., 0].bool() | x[..., 1].bool() | ~x[..., -1].bool()).view(batch_size, -1) # Assuming mask is the sum of red and blue channels
+        q_values: Tensor = self.dqn_network(x) # (N, num_actions)
+
+        # Step 2: Determine the current player and adjust Q-values accordingly.
+        # We assume the 3rd channel (index 2) of the observation indicates the player.
+        # Player 0: channel is all 0s. Player 1: channel is all 1s.
+        current_player: float = x[..., 2].mean().item() # Will be 0.0 or 1.0
+
+        if current_player == 1.0:
+            # Player 1 (blue) wants to MINIMIZE the Q-value.
+            # This is equivalent to MAXIMIZING the negative Q-value.
+            effective_q_values = -q_values
+        else:
+            # Player 0 (red) wants to MAXIMIZE the Q-value.
+            effective_q_values = q_values
+
+        # Step 3: Apply the action mask. This is crucial.
+        # Set the Q-value of all illegal moves to negative infinity.
+        effective_q_values[~mask] = -torch.inf
+
+        return effective_q_values
