@@ -19,13 +19,13 @@ from torchrl.data import (
 # Constants
 N_CHANNEL = 4 # Number of channels for the observation (Red, Blue, Current Player, Valid Board)
 MAX_BOARD_SIZE = 32 # Maximum board size for the Hex game
-SWAP_RULE = False # Whether to use the swap rule in the Hex game
+SWAP_RULE = True # Whether to use the swap rule in the Hex game
 
 class HexEnv(EnvBase):
     def __init__(self, 
                  board_size: int,
                  max_board_size: int = MAX_BOARD_SIZE,
-                #  swap_rule: bool = SWAP_RULE,
+                 swap_rule: bool = SWAP_RULE,
                  device: torch.device = 'cpu',
                 #  batch_size: torch.Size = torch.Size()
                 ):
@@ -40,7 +40,7 @@ class HexEnv(EnvBase):
         self.board_size: int = board_size
         self.max_board_size: int = max_board_size
         self.n_channel: int = N_CHANNEL
-        # self.swap_rule: bool = swap_rule # Not implemented yet
+        self.swap_rule: bool = swap_rule
         # self.device: torch.device = device
         # self.batch_size: torch.Size = batch_size # No batching at all
 
@@ -90,7 +90,7 @@ class HexEnv(EnvBase):
     def _reset(self, tensordict: TensorDict | None = None, **kwargs) -> TensorDict:
         # Initialize a fresh board
         board: Tensor = torch.full((self.max_board_size, self.max_board_size), -1, dtype=torch.long, device=self.device) # -1: empty, 0: player 0 (red), 1: player 1 (blue)
-        # current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
+        current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
         # valid_move: Tensor = self.valid_board.float() # All valid moves at the start
         done: Tensor = torch.tensor(False, dtype=torch.bool, device=self.device) # Game not done
         reward: Tensor = torch.tensor([0.0], dtype=torch.float32, device=self.device) # No reward at the start
@@ -100,7 +100,7 @@ class HexEnv(EnvBase):
         fresh_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float32, device=self.device) # (max_board_size, max_board_size, n_channel)
         fresh_observation[..., 0] = (board == 0).float() # Red pieces channel
         fresh_observation[..., 1] = (board == 1).float() # Blue pieces channel
-        fresh_observation[..., 2] = 0 # 0: player 0 (red), 1: player 1 (blue)
+        fresh_observation[..., -2] = current_player # 0: player 0 (red), 1: player 1 (blue)
         fresh_observation[..., -1] = self.valid_board.clone().float() # (max_board_size, max_board_size) Playable board mask
         fresh_mask: Tensor = self.valid_board.clone().bool() # (max_board_size ** 2) Valid move mask
         fresh_done: Tensor = done # Not done
@@ -110,37 +110,56 @@ class HexEnv(EnvBase):
         self.action_spec.update_mask(fresh_mask.flatten())
 
         # Update tensordict
-        fresh_tensordict = TensorDict({
-            "action": fresh_action,
-            "observation": fresh_observation,
-            "mask": fresh_mask,
-            "done": fresh_done,
-            "reward": fresh_reward
-        }, device=self.device)
+        if not isinstance(tensordict, TensorDict):
+            fresh_tensordict = TensorDict({
+                "action": fresh_action,
+                "observation": fresh_observation,
+                "mask": fresh_mask,
+                "done": fresh_done,
+                "reward": fresh_reward
+            }, device=self.device)
+        else:
+            fresh_tensordict: TensorDict = tensordict
+            fresh_tensordict.update({
+                "action": fresh_action,
+                "observation": fresh_observation,
+                "mask": fresh_mask,
+                "done": fresh_done,
+                "reward": fresh_reward
+            })
 
         return fresh_tensordict
 
     def _step(self, tensordict: TensorDict, **kwargs) -> TensorDict:
         # Extract action
-        action: Tensor = tensordict.get("action") # Scalar tensor representing the action
-        observation: Tensor = tensordict.get("observation") # (max_board_size, max_board_size, n_channel)
-        mask: Tensor = tensordict.get("mask") # (max_board_size, max_board_size)
-        done: Tensor = tensordict.get("done") # Scalar tensor representing if the game is done
-        reward: Tensor = tensordict.get("reward") # (2,)
+        action: Tensor = tensordict.get("action").clone() # Scalar tensor representing the action
+        observation: Tensor = tensordict.get("observation").clone() # (max_board_size, max_board_size, n_channel)
+        mask: Tensor = tensordict.get("mask").clone() # (max_board_size, max_board_size)
+        done: Tensor = tensordict.get("done").clone() # Scalar tensor representing if the game is done
+        reward: Tensor = tensordict.get("reward").clone() # (2,)
 
         # Extract indexes of action from observation
         index: int = int(action.item())
         row, col = divmod(index, self.max_board_size) # Convert flat index to 2D coordinates
 
         # Extract current state from observation
-        current_player: int = int(observation[..., 0, 0, 2].item()) # 0: player 0 (red), 1: player 1 (blue)
+        current_player: int = int(observation[0, 0, -2].item()) # 0: player 0 (red), 1: player 1 (blue)
+
+        # Check if this is a swap situation
+        is_first_move = (torch.sum(observation[..., 0:2]).item() == 0 and
+                         current_player == 0)  # Player 0's turn and no pieces placed yet
+        is_second_move = (torch.sum(observation[..., 0:2]).item() == 1 and
+                          current_player == 1)  # Player 1's turn and only one piece placed
+        is_swap_action = (self.swap_rule and
+                        is_second_move and
+                        observation[row, col, 0] == 1) # Player 1 selecting player 0's piece
 
         # Validate action
         is_valid = (
             0 <= row < self.max_board_size and # Must be within board's max bounds
             0 <= col < self.max_board_size and # Must be within board's max bounds
             self.valid_board[row, col] and # Must be in valid board area
-            mask[row, col] == 1  # Must be empty to place a piece
+            (mask[row, col] == 1 or is_swap_action)  # Must be empty to place a piece, or a valid swap action
         )
 
         # If action is not valid (only when action_spec mask is not working properly)
@@ -150,9 +169,14 @@ class HexEnv(EnvBase):
             # self.done = False # Continue the game even if the move is invalid
             # new_observation, new_mask = tensordict.get("observation"), tensordict.get("mask") # Keep previous observation and mask
         else:
-            # Place the piece
-            observation[row, col, current_player] = 1.0 # Update observation for the current player
+            # Update mask to prevent placing another piece here
             mask[row, col] = 0 # Update mask to prevent placing another piece here
+
+            # Place piece or swap
+            if is_swap_action: # Swap the pieces
+                observation[..., 0], observation[..., 1] = observation[..., 1].clone(), observation[..., 0].clone()
+            else: # Place the piece on the board
+                observation[row, col, current_player] = 1.0 # Update observation for the current player
 
             # Check for win condition (placeholder logic)
             if self._check_done(observation, current_player):
@@ -169,9 +193,9 @@ class HexEnv(EnvBase):
             new_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float, device=self.device) # (max_board_size, max_board_size, n_channel)
             new_observation[..., 0] = observation[..., 0] # Red pieces channel
             new_observation[..., 1] = observation[..., 1] # Blue pieces channel
-            new_observation[..., 2] = float(current_player) # Current player channel
+            new_observation[..., -2] = float(current_player) # Current player channel
             new_observation[..., -1] = observation[..., -1] # (max_board_size, max_board_size) Playable board mask (doesn't change)
-            new_mask: Tensor = mask.bool().clone() # Valid move mask
+            new_mask: Tensor = mask.bool() # Valid move mask
 
         # Create done, reward tensors
         new_action: Tensor = action
@@ -179,7 +203,14 @@ class HexEnv(EnvBase):
         new_reward: Tensor = reward
 
         # Update action spec for the environment
-        self.action_spec.update_mask(new_mask.flatten())
+        if is_first_move and self.swap_rule:
+            # Allow swap action if it's the first move and swap rule is enabled
+            swap_mask = new_mask.clone()
+            swap_mask[row, col] = 1 # Allow the swap action
+            self.action_spec.update_mask(swap_mask.flatten())
+        else:
+            # Update action spec for the environment
+            self.action_spec.update_mask(new_mask.flatten())
 
         # Update tensordict
         new_tensordict = TensorDict({
