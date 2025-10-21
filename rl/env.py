@@ -4,14 +4,11 @@ import numpy as np
 
 from tensordict import TensorDict
 from torch import Tensor
-from torchrl.envs import EnvBase
-from torchrl.envs.transforms import ActionMask, TransformedEnv
+from torchrl.envs import EnvBase, SerialEnv
 from torchrl.data import (
     Binary,
-    Bounded,
     Categorical,
     Composite,
-    TensorSpec,
     UnboundedContinuous
 )
 
@@ -93,7 +90,7 @@ class HexEnv(EnvBase):
         current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
         # valid_move: Tensor = self.valid_board.float() # All valid moves at the start
         done: Tensor = torch.tensor(False, dtype=torch.bool, device=self.device) # Game not done
-        reward: Tensor = torch.tensor([0.0], dtype=torch.float32, device=self.device) # No reward at the start
+        # reward: Tensor = torch.tensor([0.0], dtype=torch.float32, device=self.device) # No reward at the start
 
         # Create fresh observation, mask, done, reward
         fresh_action: Tensor = torch.tensor([0], dtype=torch.long, device=self.device) # Placeholder action
@@ -104,29 +101,19 @@ class HexEnv(EnvBase):
         fresh_observation[..., -1] = self.valid_board.clone().float() # (max_board_size, max_board_size) Playable board mask
         fresh_mask: Tensor = self.valid_board.clone().bool() # (max_board_size ** 2) Valid move mask
         fresh_done: Tensor = done # Not done
-        fresh_reward: Tensor = reward # No reward at the start
+        # fresh_reward: Tensor = reward # No reward at the start
 
         # Update action spec for the environment
         self.action_spec.update_mask(fresh_mask.flatten())
 
-        # Update tensordict
-        if not isinstance(tensordict, TensorDict):
-            fresh_tensordict = TensorDict({
-                "action": fresh_action,
-                "observation": fresh_observation,
-                "mask": fresh_mask,
-                "done": fresh_done,
-                "reward": fresh_reward
-            }, device=self.device)
-        else:
-            fresh_tensordict: TensorDict = tensordict
-            fresh_tensordict.update({
-                "action": fresh_action,
-                "observation": fresh_observation,
-                "mask": fresh_mask,
-                "done": fresh_done,
-                "reward": fresh_reward
-            })
+        # Create fresh tensordict
+        fresh_tensordict: TensorDict = TensorDict({
+            "action": fresh_action,
+            "observation": fresh_observation,
+            "mask": fresh_mask,
+            "done": fresh_done,
+            # "reward": fresh_reward
+        }, device=self.device)
 
         return fresh_tensordict
 
@@ -136,7 +123,8 @@ class HexEnv(EnvBase):
         observation: Tensor = tensordict.get("observation").clone() # (max_board_size, max_board_size, n_channel)
         mask: Tensor = tensordict.get("mask").clone() # (max_board_size, max_board_size)
         done: Tensor = tensordict.get("done").clone() # Scalar tensor representing if the game is done
-        reward: Tensor = tensordict.get("reward").clone() # (2,)
+        reward: Tensor = self.reward_spec.zero() # Initialize reward tensor # (1,)
+        # reward: Tensor = tensordict.get("reward").clone() # (2,)
 
         # Extract indexes of action from observation
         index: int = int(action.item())
@@ -263,3 +251,93 @@ class HexEnv(EnvBase):
     def _set_seed(self, seed: int) -> None:
         np.random.seed(seed)
         torch.manual_seed(seed)
+
+
+class MaskedSerialEnv(SerialEnv):
+    """
+    Một lớp SerialEnv tùy chỉnh tự động đồng bộ action masks
+    từ các môi trường con (child envs) lên môi trường cha (parent env).
+
+    Lớp này ghi đè `step()` và `reset()` để đảm bảo
+    `self.action_spec.mask` của SerialEnv luôn
+    phản ánh trạng thái mask tổng hợp (stacked) của các môi trường con.
+    
+    Điều này làm cho các phương thức như `rand_action()` và `rand_step()`
+    hoạt động chính xác với các action mask động.
+    """
+
+    def __init__(self, *args, **kwargs):
+        """
+        Khởi tạo SerialEnv gốc.
+        Tất cả các đối số được chuyển thẳng đến lớp cha (SerialEnv).
+        """
+        super().__init__(*args, **kwargs)
+
+    def _sync_action_mask(self):
+        """
+        Hàm helper (nội bộ) để thu thập mask từ tất cả các env con
+        và gán vào action_spec của env cha.
+        """
+        try:
+            # Lấy danh sách các mask từ mỗi môi trường con
+            # `self._envs` là danh sách các env con được SerialEnv quản lý
+            all_masks = [env.action_spec.mask for env in self._envs]
+
+            # Nếu tất cả các env con đều chưa có mask (ví dụ: chưa reset lần nào)
+            if all(m is None for m in all_masks):
+                self.action_spec.mask = None
+                return
+
+            # Stack tất cả các mask lại với nhau dọc theo chiều batch (dim=0)
+            # Điều này tạo ra một tensor mask có shape [num_workers, *mask_shape]
+            stacked_masks = torch.stack(all_masks, dim=0)
+
+            # Gán tensor mask đã stack vào spec của env cha
+            self.action_spec.mask = stacked_masks
+
+        except AttributeError:
+            # Xử lý trường hợp `env.action_spec.mask` không tồn tại
+            print(
+                "Cảnh báo: Không thể đồng bộ mask. Một hoặc nhiều env con "
+                "thiếu thuộc tính 'mask' trong action_spec."
+            )
+            self.action_spec.mask = None
+        except Exception as e:
+            # Bắt các lỗi khác (ví dụ: shape, device, dtype không khớp khi stack)
+            print(f"Cảnh báo: Không thể stack các action mask: {e}")
+            self.action_spec.mask = None
+
+    def reset(self, tensordict: TensorDict | None = None, **kwargs) -> TensorDict:
+        """
+        Ghi đè phương thức reset().
+
+        Nó gọi hàm reset() gốc của SerialEnv, sau đó
+        đồng bộ action mask mới từ các môi trường con.
+        
+        Sử dụng 'TensorDict | None' (PEP 604) thay vì Optional[TensorDict].
+        Bỏ ': Any' khỏi **kwargs.
+        """
+        # 1. Gọi hàm reset() gốc của SerialEnv
+        data = super().reset(tensordict=tensordict, **kwargs)
+
+        # 2. Đồng bộ mask TỪ trạng thái MỚI
+        self._sync_action_mask()
+
+        # 3. Trả về dữ liệu state ban đầu
+        return data
+
+    def step(self, tensordict: TensorDict) -> TensorDict:
+        """
+        Ghi đè phương thức step().
+
+        Nó gọi hàm step() gốc của SerialEnv, sau đó
+        đồng bộ action mask mới (của state tiếp theo) từ các môi trường con.
+        """
+        # 1. Gọi hàm step() gốc của SerialEnv
+        next_data = super().step(tensordict)
+
+        # 2. Đồng bộ mask TỪ trạng thái "next"
+        self._sync_action_mask()
+
+        # 3. Trả về dữ liệu của bước tiếp theo
+        return next_data
