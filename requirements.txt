@@ -9,5 +9,6 @@ python-dateutil
 pytz
 rich
 six
+tqdm
 trueskill
 tzdata

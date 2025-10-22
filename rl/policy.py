@@ -122,16 +122,17 @@ class TransformerQL(nn.Module):
             return x.view(batch_size, height, width) # (N, H, W)
 
 
-class TurnWrapper(nn.Module):
+class MaskWrapper(nn.Module):
     """
     A custom policy for Hex that wraps a DQN.
     - If it's Player 0's turn, it maximizes the Q-value.
     - If it's Player 1's turn, it minimizes the Q-value.
     It always respects the action mask.
     """
-    def __init__(self, dqn_network: nn.Module):
+    def __init__(self, dqn_network: nn.Module, turn_wrapper: bool = True):
         super().__init__()
         self.dqn_network = dqn_network
+        self.turn_wrapper = turn_wrapper
 
     def forward(self, x: Tensor, tensordict: TensorDict | None = None) -> Tensor:
         # x: (N, H, W, C)
@@ -142,21 +143,27 @@ class TurnWrapper(nn.Module):
         mask = ~(x[..., 0].bool() | x[..., 1].bool() | ~x[..., -1].bool()).view(batch_size, -1) # Assuming mask is the sum of red and blue channels
         q_values: Tensor = self.dqn_network(x) # (N, num_actions)
 
-        # Step 2: Determine the current player and adjust Q-values accordingly.
-        # We assume the 3rd channel (index 2) of the observation indicates the player.
-        # Player 0: channel is all 0s. Player 1: channel is all 1s.
-        current_player: float = x[..., 2].mean().item() # Will be 0.0 or 1.0
-
-        if current_player == 1.0:
-            # Player 1 (blue) wants to MINIMIZE the Q-value.
-            # This is equivalent to MAXIMIZING the negative Q-value.
-            effective_q_values = -q_values
+        # If turn_wrapper is disabled, just apply the mask and return
+        if not self.turn_wrapper:
+            # If turn_wrapper is disabled, just apply the mask and return
+            q_values[~mask] = -torch.inf
+            return q_values
         else:
-            # Player 0 (red) wants to MAXIMIZE the Q-value.
-            effective_q_values = q_values
+            # Step 2: Determine the current player and adjust Q-values accordingly.
+            # We assume the 3rd channel (index 2) of the observation indicates the player.
+            # Player 0: channel is all 0s. Player 1: channel is all 1s.
+            current_player: float = x[..., 2].any().item() # Will be 0.0 or 1.0
 
-        # Step 3: Apply the action mask. This is crucial.
-        # Set the Q-value of all illegal moves to negative infinity.
-        effective_q_values[~mask] = -torch.inf
+            if current_player == 1.0:
+                # Player 1 (blue) wants to MINIMIZE the Q-value.
+                # This is equivalent to MAXIMIZING the negative Q-value.
+                effective_q_values = -q_values
+            else:
+                # Player 0 (red) wants to MAXIMIZE the Q-value.
+                effective_q_values = q_values
 
-        return effective_q_values
+            # Step 3: Apply the action mask. This is crucial.
+            # Set the Q-value of all illegal moves to negative infinity.
+            effective_q_values[~mask] = -torch.inf
+
+            return effective_q_values
