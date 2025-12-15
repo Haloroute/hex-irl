@@ -154,7 +154,7 @@ class MCTSPolicy(TensorDictModuleBase):
                 if all(value == math.inf for value in uct_values):
                     node = choice(node.children)
                 else:
-                    node = node.children[np.argmax(uct_values)]
+                    node = node.children[np.argmax(uct_values + np.random.rand(len(uct_values)) * 1e-6)]
                 action: Tensor = node.action
                 stack.append(action)
 
@@ -211,7 +211,7 @@ class MCTSPolicy(TensorDictModuleBase):
 
         # Select the best move from the root node
         ucts = [child.uct() for child in root_node.children]
-        best_child: MCTSNode = root_node.children[np.argmax(ucts)]
+        best_child: MCTSNode = root_node.children[np.argmax(ucts + np.random.rand(len(ucts)) * 1e-6)]
         best_move: Tensor = best_child.action # (1,)
 
         return best_move

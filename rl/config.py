@@ -42,12 +42,12 @@ MODEL_PARAMS = {
 # DATA COLLECTION
 # ---------------------------------
 BUFFER_SIZE = 100_000  # Maximum size of replay buffer
-N_FRAMES_PER_BATCH = 128  # Number of frames to collect per batch
+N_FRAMES_PER_BATCH = 100  # Number of frames to collect per batch
 
 # ---------------------------------
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
-BATCH_SIZE = 128  # Batch size for training
+BATCH_SIZE = 256  # Batch size for training
 LR = 1e-3  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 
@@ -55,22 +55,19 @@ WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 TOTAL_FRAMES = 100_000  # Total training frames
 WARMUP_FRAMES = 5_000  # Random exploration frames before training starts
 OPTIMIZATION_STEPS = 10  # UTD Ratio: gradient updates per data collection
+GAMMA = 0.99  # Discount factor for future rewards
 TAU = 0.005  # Soft update coefficient for target network (Polyak averaging)
 GRAD_CLIP_NORM = 1.0  # Maximum norm for gradient clipping
 
 # Logging and Evaluation
-LOG_INTERVAL = 16  # Log and evaluate every N iterations
-EVAL_GAMES = 10  # Number of games for evaluation against random policy
+LOG_INTERVAL = 10  # Log and evaluate every N iterations
+RANDOM_EVAL_INTERVAL = 100  # Evaluate using random policy every N iterations
+MCTS_EVAL_INTERVAL = 1000  # Evaluate using MCTS policy every N iterations
+EVAL_GAMES = 100  # Number of games for evaluation against random policy
 MCTS_ITERMAX = 100  # MCTS iterations for evaluation
-
-# ---------------------------------
-# ALGORITHM-SPECIFIC SETTINGS
-# ---------------------------------
-# SAC (Soft Actor-Critic) Settings
-GAMMA = 0.99  # Discount factor for future rewards
 
 # ---------------------------------
 # CHECKPOINT SETTINGS
 # ---------------------------------
-CHECKPOINT_DIR = "d:/Code/Python/hex-irl/checkpoints"  # Directory for saving models
-RESULTS_DIR = "d:/Code/Python/hex-irl/results"  # Directory for saving results/plots
+CHECKPOINT_DIR = "checkpoints"  # Directory for saving models
+RESULTS_DIR = "results"  # Directory for saving results/plots

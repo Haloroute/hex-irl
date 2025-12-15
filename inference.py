@@ -14,6 +14,7 @@ from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torch import Tensor
 from torchrl.envs import TransformedEnv, ActionMask
+from torchrl.envs.utils import set_exploration_type, ExplorationType
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 
 # Import custom modules
@@ -177,10 +178,10 @@ class HexGamePlayer:
     def _show_game_result(self, winner: int):
         """Display game result."""
         print("\n" + "=" * 60)
-        if winner == 0:
-            print("🎉 HUMAN WINS! (Red)")
-        elif winner == 1:
-            print("🤖 AI WINS! (Blue)")
+        if self.human_first and winner == 1 or not self.human_first and winner == 0:
+            print(f"🎉 HUMAN WINS! ({'Red' if self.human_first else 'Blue'})")
+        elif self.human_first and winner == 0 or not self.human_first and winner == 1:
+            print(f"🤖 AI WINS! ({'Blue' if self.human_first else 'Red'})")
         else:
             print("DRAW!")
         print("=" * 60)
@@ -208,6 +209,7 @@ class HexGamePlayer:
     def play(self):
         """Main game loop."""
         self.reset_game()
+        set_exploration_type(ExplorationType.DETERMINISTIC)
         running = True
         while running:
             # Update UI from observation
@@ -267,7 +269,8 @@ def main():
     # Create game player
     game = HexGamePlayer(
         checkpoint_path=str(checkpoint_path),
-        board_size=BOARD_SIZE
+        board_size=BOARD_SIZE,
+        human_first=False
     )
     
     # Start playing

@@ -40,11 +40,12 @@ from rl.utility import (
     evaluate_agent
 )
 from rl.config import (
-    DEVICE, BOARD_SIZE, MAX_BOARD_SIZE,
-    MODEL_PARAMS, BUFFER_SIZE, N_FRAMES_PER_BATCH, STORAGE_DEVICE,
+    DEVICE, STORAGE_DEVICE,
+    BOARD_SIZE, MAX_BOARD_SIZE, SWAP_RULE, N_CHANNEL,
+    MODEL_PARAMS, BUFFER_SIZE, N_FRAMES_PER_BATCH,
     BATCH_SIZE, LR, WEIGHT_DECAY,
-    TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, TAU,
-    LOG_INTERVAL, EVAL_GAMES, MCTS_ITERMAX, GAMMA, GRAD_CLIP_NORM,
+    TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
+    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
     CHECKPOINT_DIR, RESULTS_DIR
 )
 
@@ -109,7 +110,8 @@ def warmup_phase(replay_buffer, warmup_collector):
 
 def training_loop(
     collector, replay_buffer, loss_fn, optimizer, updater,
-    actor, qvalue_network, serial_env, evaluate_env, total_frames_collected
+    actor, qvalue_network, serial_env, evaluate_env, total_frames_collected,
+    random_policy, mcts_policy
 ):
     """Main training loop."""
     print("\n" + "=" * 60)
@@ -191,26 +193,39 @@ def training_loop(
         training_history['qvalue_loss'].append(avg_qvalue_loss)
         training_history['alpha_loss'].append(avg_alpha_loss)
         training_history['frames'].append(total_frames_collected)
-        
-        # Periodic evaluation
-        if iteration % LOG_INTERVAL == 0:
+
+        # Evaluation against MCTS policy
+        if iteration % MCTS_EVAL_INTERVAL == 0:
             print(f"\n{'='*60}")
             print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
             print(f"{'='*60}")
             
             # Evaluate agent
             actor.eval()
-            eval_results = evaluate_agent(actor, MaskedRandomPolicy(serial_env.action_spec), evaluate_env, n_games=EVAL_GAMES)
+            eval_results = evaluate_agent(actor, mcts_policy, evaluate_env, n_games=EVAL_GAMES)
             actor.train()
             win_rate = eval_results['win_rate']
             training_history['win_rate'].append(win_rate)
             
+            print("Evaluation against MCTS Policy:")
             print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
             print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
             print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
             print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
             print(f"Buffer Size: {len(replay_buffer)}")
             
+            # Save checkpoint
+            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
+            torch.save({
+                'iteration': iteration,
+                'actor_state_dict': actor.module[0].model.state_dict(),
+                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'win_rate': win_rate,
+                'training_history': training_history
+            }, checkpoint_path)
+            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
+
             # Save best model
             if win_rate > best_win_rate:
                 best_win_rate = win_rate
@@ -225,18 +240,72 @@ def training_loop(
                 }, checkpoint_path)
                 print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
             
+            
             print(f"{'='*60}\n")
             
+            # Early stopping
+            if best_win_rate > 0.8:
+                print("🎉 Target win rate achieved! Stopping training.")
+                break
+
+        # Evaluate against random policy
+        elif iteration % RANDOM_EVAL_INTERVAL == 0:
+            print(f"\n{'='*60}")
+            print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
+            print(f"{'='*60}")
+
+            # Evaluate agent
+            actor.eval()
+            eval_results = evaluate_agent(actor, random_policy, evaluate_env, n_games=EVAL_GAMES)
+            actor.train()
+            win_rate = eval_results['win_rate']
+            training_history['win_rate'].append(win_rate)
+
+            print("Evaluation against Random Policy:")
+            print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
+            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
+            print(f"Buffer Size: {len(replay_buffer)}")
+
+            # Save checkpoint
+            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
+            torch.save({
+                'iteration': iteration,
+                'actor_state_dict': actor.module[0].model.state_dict(),
+                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'win_rate': win_rate,
+                'training_history': training_history
+            }, checkpoint_path)
+            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
+
+            # Save best model
+            if win_rate > best_win_rate:
+                best_win_rate = win_rate
+                checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_best.pth"
+                torch.save({
+                    'iteration': iteration,
+                    'actor_state_dict': actor.module[0].model.state_dict(),
+                    'qvalue_state_dict': qvalue_network.module.model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'win_rate': win_rate,
+                    'training_history': training_history
+                }, checkpoint_path)
+                print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
+
+            print(f"{'='*60}\n")
+
             # Early stopping
             if best_win_rate > 0.98:
                 print("🎉 Target win rate achieved! Stopping training.")
                 break
-        else:
-            # Brief progress update
-            if iteration % math.sqrt(LOG_INTERVAL) == 0:
-                print(f"Iter {iteration} | Frames: {total_frames_collected:,} | "
-                      f"Loss: A={avg_actor_loss:.3f} Q={avg_qvalue_loss:.3f} α={avg_alpha_loss:.3f}")
-    
+
+        # Regular logging
+        elif iteration % LOG_INTERVAL == 0:
+            print(f"Iter {iteration} | Frames: {total_frames_collected:,} | "
+                    f"Loss: A={avg_actor_loss:.3f} Q={avg_qvalue_loss:.3f} α={avg_alpha_loss:.3f}")
+
     print("\n" + "=" * 60)
     print("TRAINING COMPLETED")
     print(f"Best Win Rate: {best_win_rate:.1%}")
@@ -272,11 +341,12 @@ def plot_training_curves(training_history, best_win_rate):
     axes[1, 0].set_xlabel('Iteration')
     axes[1, 0].set_ylabel('Loss')
     axes[1, 0].grid(True)
-    
+
     # Win Rate
     eval_iterations = [
-        training_history['iteration'][i] 
-        for i in range(0, len(training_history['iteration']), LOG_INTERVAL)
+        training_history['iteration'][i]
+        for i in range(0, len(training_history['iteration']))
+        if i % RANDOM_EVAL_INTERVAL == 0 or i % MCTS_EVAL_INTERVAL == 0
     ]
     axes[1, 1].plot(eval_iterations, training_history['win_rate'], marker='o')
     axes[1, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
@@ -285,7 +355,7 @@ def plot_training_curves(training_history, best_win_rate):
     axes[1, 1].set_ylabel('Win Rate')
     axes[1, 1].legend()
     axes[1, 1].grid(True)
-    
+
     plt.tight_layout()
     plot_path = results_dir / f"training_curves_{BOARD_SIZE}x{BOARD_SIZE}.png"
     plt.savefig(plot_path, dpi=300)
@@ -411,18 +481,20 @@ def main():
         storing_device=STORAGE_DEVICE,
         env_device=STORAGE_DEVICE
     )
+    random_policy = MaskedRandomPolicy(serial_env.action_spec)
+    mcts_policy = MCTSPolicy(evaluate_env, itermax=MCTS_ITERMAX)
 
     training_history, best_win_rate = training_loop(
         collector, replay_buffer, loss_fn, optimizer, updater,
-        actor, qvalue_network, serial_env, evaluate_env, total_frames_collected
+        actor, qvalue_network, serial_env, evaluate_env, total_frames_collected,
+        random_policy, mcts_policy
     )
 
     # 9. Plot results
     plot_training_curves(training_history, best_win_rate)
 
     # 10. Final evaluation
-    random_actor = MCTSPolicy(evaluate_env, itermax=MCTS_ITERMAX)
-    final_evaluation(actor, random_actor, evaluate_env, best_win_rate)
+    final_evaluation(actor, mcts_policy, evaluate_env, best_win_rate)
 
 
 if __name__ == "__main__":

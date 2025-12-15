@@ -14,6 +14,69 @@ from torchrl.data import (
 )
 
 
+@torch.jit.script
+def check_done_jit(board: Tensor, player: int) -> bool:
+    """
+    Kiểm tra điều kiện thắng Hex bằng DFS.
+    Args:
+        board: Tensor 2D (H, W) chỉ chứa 0 hoặc 1 (đã lọc theo player)
+        player: 0 (Red - Top-Bottom) hoặc 1 (Blue - Left-Right)
+    """
+    H, W = board.shape
+    
+    # 1. Định nghĩa directions (JIT hiểu List[Tuple])
+    # Hex directions: [(-1,0), (1,0), (0,-1), (0,1), (1,-1), (-1,1)]
+    directions: list[tuple[int, int]] = [
+        (-1, 0), (1, 0), (0, -1), (0, 1), (1, -1), (-1, 1)
+    ]
+    
+    visited = torch.zeros((H, W), dtype=torch.bool, device=board.device)
+    
+    # Stack chứa tọa độ (row, col)
+    # JIT yêu cầu khai báo rõ kiểu cho stack rỗng ban đầu
+    stack: list[tuple[int, int]] = []
+
+    # 2. Khởi tạo Start Positions (Thay thế logic lambda/list comp cũ)
+    if player == 0:
+        # Red: Tìm các quân ở hàng trên cùng (row 0)
+        for c in range(W):
+            if board[0, c] == 1:
+                stack.append((0, c))
+                visited[0, c] = True
+    else:
+        # Blue: Tìm các quân ở cột trái cùng (col 0)
+        for r in range(H):
+            if board[r, 0] == 1:
+                stack.append((r, 0))
+                visited[r, 0] = True
+
+    # 3. DFS Loop
+    while len(stack) > 0:
+        curr = stack.pop()
+        r, c = curr[0], curr[1] # Unpack tuple thủ công để an toàn trong JIT
+
+        # Target Condition (Thay thế lambda)
+        if player == 0:
+            if r == H - 1: # Chạm đáy
+                return True
+        else:
+            if c == W - 1: # Chạm phải
+                return True
+
+        # Check Neighbors
+        for d in directions:
+            nr = r + d[0]
+            nc = c + d[1]
+
+            if 0 <= nr < H and 0 <= nc < W:
+                # Logic: Có quân (==1) và chưa thăm
+                if board[nr, nc] == 1 and not visited[nr, nc]:
+                    visited[nr, nc] = True
+                    stack.append((nr, nc))
+
+    return False
+
+
 # # 1. Lấy đường dẫn thư mục chứa file environment.py hiện tại (<root>/rl/model)
 # current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -212,64 +275,59 @@ class HexEnv(EnvBase):
         else:
             return empty_mask # (max_board_size, max_board_size)
 
-    def _check_done(self, observation: Tensor, current_player: int) -> bool:
-        def dfs(board, start_positions, target_condition, directions):
-            visited = torch.zeros((self.board_size, self.board_size), dtype=torch.bool)
-            for start in start_positions:
-                if board[start] == 1 and not visited[start]:
-                    stack = [start]
-                    visited[start] = True
-                    while stack:
-                        r, c = stack.pop()
-                        if target_condition(r, c):
-                            return True
-                        for dr, dc in directions:
-                            nr, nc = r + dr, c + dc
-                            if 0 <= nr < self.board_size and 0 <= nc < self.board_size and board[nr, nc] == 1 and not visited[nr, nc]:
-                                visited[nr, nc] = True
-                                stack.append((nr, nc))
-            return False
-
-        directions = [(-1,0), (1,0), (0,-1), (0,1), (1,-1), (-1,1)] # 6 possible directions in a hex grid
-        board_state = observation[:self.board_size, :self.board_size, :]
-        # Use DFS to check if player 0 (red) has connected top to bottom
-        if current_player == 0:
-            board = board_state[..., 0] # Shape (board_size, board_size) # Player 0 pieces
-            start_positions = [(0, col) for col in range(self.board_size)]
-            target_condition = lambda r, c: r == self.board_size - 1
-            if dfs(board, start_positions, target_condition, directions):
-                return True
-
-        # Use DFS to check if player 1 (blue) has connected left to right
-        else:
-            board = board_state[..., 1] # Shape (board_size, board_size) # Player 1 pieces
-            start_positions = [(row, 0) for row in range(self.board_size)]
-            target_condition = lambda r, c: c == self.board_size - 1
-            if dfs(board, start_positions, target_condition, directions):
-                return True
-
-        return False # No winner yet
-
     # def _check_done(self, observation: Tensor, current_player: int) -> bool:
-    #     # Cắt lấy phần bàn cờ thực tế (loại bỏ padding nếu có)
-    #     # observation shape: (max_size, max_size, channels)
-        
-    #     # 1. Trích xuất board của người chơi hiện tại
+    #     def dfs(board, start_positions, target_condition, directions):
+    #         visited = torch.zeros((self.board_size, self.board_size), dtype=torch.bool)
+    #         for start in start_positions:
+    #             if board[start] == 1 and not visited[start]:
+    #                 stack = [start]
+    #                 visited[start] = True
+    #                 while stack:
+    #                     r, c = stack.pop()
+    #                     if target_condition(r, c):
+    #                         return True
+    #                     for dr, dc in directions:
+    #                         nr, nc = r + dr, c + dc
+    #                         if 0 <= nr < self.board_size and 0 <= nc < self.board_size and board[nr, nc] == 1 and not visited[nr, nc]:
+    #                             visited[nr, nc] = True
+    #                             stack.append((nr, nc))
+    #         return False
+
+    #     directions = [(-1,0), (1,0), (0,-1), (0,1), (1,-1), (-1,1)] # 6 possible directions in a hex grid
+    #     board_state = observation[:self.board_size, :self.board_size, :]
+    #     # Use DFS to check if player 0 (red) has connected top to bottom
     #     if current_player == 0:
-    #         # Player 0 (Red): Channel 0
-    #         board_tensor = observation[:self.board_size, :self.board_size, 0]
+    #         board = board_state[..., 0] # Shape (board_size, board_size) # Player 0 pieces
+    #         start_positions = [(0, col) for col in range(self.board_size)]
+    #         target_condition = lambda r, c: r == self.board_size - 1
+    #         if dfs(board, start_positions, target_condition, directions):
+    #             return True
+
+    #     # Use DFS to check if player 1 (blue) has connected left to right
     #     else:
-    #         # Player 1 (Blue): Channel 1
-    #         board_tensor = observation[:self.board_size, :self.board_size, 1]
+    #         board = board_state[..., 1] # Shape (board_size, board_size) # Player 1 pieces
+    #         start_positions = [(row, 0) for row in range(self.board_size)]
+    #         target_condition = lambda r, c: c == self.board_size - 1
+    #         if dfs(board, start_positions, target_condition, directions):
+    #             return True
 
-    #     # 2. Đảm bảo tensor ở trên CPU và contiguous (bắt buộc cho C++ accessor)
-    #     # Nếu thiết bị là CUDA, .cpu() sẽ copy dữ liệu. 
-    #     # Nếu đã là CPU, nó gần như cost-free.
-    #     board_cpu = board_tensor.detach().cpu().contiguous()
+    #     return False # No winner yet
 
-    #     # 3. Gọi hàm C++
-    #     # Trả về True/False
-    #     return hex_utils.check_win(board_cpu, current_player)
+    def _check_done(self, observation: Tensor, current_player: int) -> bool:
+        # Cắt lấy phần bàn cờ thực tế (loại bỏ padding nếu có)
+        # observation shape: (max_size, max_size, channels)
+
+        # 1. Trích xuất board của người chơi hiện tại
+        if current_player == 0:
+            # Player 0 (Red): Channel 0
+            board_tensor = observation[:self.board_size, :self.board_size, 0]
+        else:
+            # Player 1 (Blue): Channel 1
+            board_tensor = observation[:self.board_size, :self.board_size, 1]
+
+        # Gọi hàm JIT (Nhanh hơn 10-20 lần so với Python thuần)
+        # Lưu ý: Chuyển sang int() vì JIT đôi khi kén chọn với Tensor scalar
+        return check_done_jit(board_tensor, int(current_player))
 
     def _set_seed(self, seed: int) -> None:
         np.random.seed(seed)

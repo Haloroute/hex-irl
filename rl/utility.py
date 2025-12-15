@@ -4,6 +4,7 @@ import torch.nn as nn
 
 from torch import Tensor
 from torchrl.envs import EnvBase
+from tqdm.auto import tqdm
 
 from rl.config import DEVICE, STORAGE_DEVICE
 from rl.environment import HexEnv
@@ -221,7 +222,7 @@ def evaluate_agent(
 
     with torch.no_grad():
         # Play as Player 0 (Red)
-        for _ in range(games_as_p0):
+        for _ in tqdm(range(games_as_p0), desc="Evaluating as P0", leave=False):
             td = env.reset().to(DEVICE)
             done = False
             step_count = 0
@@ -249,7 +250,7 @@ def evaluate_agent(
                     break
 
         # Play as Player 1 (Blue)
-        for _ in range(games_as_p1):
+        for _ in tqdm(range(games_as_p1), desc="Evaluating as P1", leave=False):
             td = env.reset().to(DEVICE)
             done = False
             step_count = 0
