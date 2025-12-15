@@ -8,7 +8,7 @@ This script trains an agent to play Hex using:
 - Experience replay with warmup phase
 """
 
-import math, torch
+import copy, math, torch
 
 import torch.nn as nn
 import torch.optim as optim
@@ -45,7 +45,7 @@ from rl.config import (
     MODEL_PARAMS, BUFFER_SIZE, N_FRAMES_PER_BATCH,
     BATCH_SIZE, LR, WEIGHT_DECAY,
     TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
-    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
+    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, PAST_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
     CHECKPOINT_DIR, RESULTS_DIR
 )
 
@@ -126,13 +126,23 @@ def training_loop(
         'actor_loss': [],
         'qvalue_loss': [],
         'alpha_loss': [],
-        'win_rate': [],
+        'win_rate': {
+            'random': [],
+            'past': [],
+            'mcts': []
+        },
         'frames': []
     }
     
     # Create checkpoint directory
     checkpoint_dir = Path(CHECKPOINT_DIR)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create past actor for compare the performance with current actor
+    past_actor = copy.deepcopy(actor)
+    past_actor.eval()
+    for param in past_actor.parameters():
+        param.requires_grad = False
 
     # Set actor to training mode
     actor.train()
@@ -202,10 +212,14 @@ def training_loop(
             
             # Evaluate agent
             actor.eval()
-            eval_results = evaluate_agent(actor, mcts_policy, evaluate_env, n_games=EVAL_GAMES)
+            eval_results = evaluate_agent(
+                actor, mcts_policy,
+                device_0=DEVICE, device_1=STORAGE_DEVICE,
+                env=evaluate_env, n_games=EVAL_GAMES
+            )
             actor.train()
             win_rate = eval_results['win_rate']
-            training_history['win_rate'].append(win_rate)
+            training_history['win_rate']['mcts'].append(win_rate)
             
             print("Evaluation against MCTS Policy:")
             print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
@@ -239,14 +253,53 @@ def training_loop(
                     'training_history': training_history
                 }, checkpoint_path)
                 print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
-            
-            
             print(f"{'='*60}\n")
-            
+
             # Early stopping
             if best_win_rate > 0.8:
                 print("🎉 Target win rate achieved! Stopping training.")
                 break
+
+        # Evaluate against past policy
+        elif iteration % PAST_EVAL_INTERVAL == 0:
+            print(f"\n{'='*60}")
+            print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
+            print(f"{'='*60}")
+
+            # Evaluate agent
+            actor.eval()
+            eval_results = evaluate_agent(
+                actor, past_actor,
+                device_0=DEVICE, device_1=DEVICE,
+                env=evaluate_env, n_games=EVAL_GAMES
+            )
+            past_actor = copy.deepcopy(actor) # Update past actor
+            past_actor.eval()
+            for param in past_actor.parameters():
+                param.requires_grad = False
+            actor.train()
+            win_rate = eval_results['win_rate']
+            training_history['win_rate']['past'].append(win_rate)
+
+            print("Evaluation against Past Policy:")
+            print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
+            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
+            print(f"Buffer Size: {len(replay_buffer)}")
+
+            # Save checkpoint
+            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
+            torch.save({
+                'iteration': iteration,
+                'actor_state_dict': actor.module[0].model.state_dict(),
+                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'win_rate': win_rate,
+                'training_history': training_history
+            }, checkpoint_path)
+            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
+            print(f"{'='*60}\n")
 
         # Evaluate against random policy
         elif iteration % RANDOM_EVAL_INTERVAL == 0:
@@ -256,10 +309,14 @@ def training_loop(
 
             # Evaluate agent
             actor.eval()
-            eval_results = evaluate_agent(actor, random_policy, evaluate_env, n_games=EVAL_GAMES)
+            eval_results = evaluate_agent(
+                actor, random_policy,
+                device_0=DEVICE, device_1=STORAGE_DEVICE,
+                env=evaluate_env, n_games=EVAL_GAMES
+            )
             actor.train()
             win_rate = eval_results['win_rate']
-            training_history['win_rate'].append(win_rate)
+            training_history['win_rate']['random'].append(win_rate)
 
             print("Evaluation against Random Policy:")
             print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
@@ -279,27 +336,7 @@ def training_loop(
                 'training_history': training_history
             }, checkpoint_path)
             print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
-
-            # Save best model
-            if win_rate > best_win_rate:
-                best_win_rate = win_rate
-                checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_best.pth"
-                torch.save({
-                    'iteration': iteration,
-                    'actor_state_dict': actor.module[0].model.state_dict(),
-                    'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'win_rate': win_rate,
-                    'training_history': training_history
-                }, checkpoint_path)
-                print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
-
             print(f"{'='*60}\n")
-
-            # Early stopping
-            if best_win_rate > 0.98:
-                print("🎉 Target win rate achieved! Stopping training.")
-                break
 
         # Regular logging
         elif iteration % LOG_INTERVAL == 0:
@@ -314,12 +351,12 @@ def training_loop(
     return training_history, best_win_rate
 
 
-def plot_training_curves(training_history, best_win_rate):
+def plot_training_curves(training_history):
     """Plot and save training curves."""
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
     
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig, axes = plt.subplots(3, 2, figsize=(15, 10))
     
     # Actor Loss
     axes[0, 0].plot(training_history['iteration'], training_history['actor_loss'])
@@ -342,19 +379,47 @@ def plot_training_curves(training_history, best_win_rate):
     axes[1, 0].set_ylabel('Loss')
     axes[1, 0].grid(True)
 
-    # Win Rate
+    # Win Rate with Random Policy
     eval_iterations = [
         training_history['iteration'][i]
         for i in range(0, len(training_history['iteration']))
-        if i % RANDOM_EVAL_INTERVAL == 0 or i % MCTS_EVAL_INTERVAL == 0
+        if i % RANDOM_EVAL_INTERVAL == 0 and i % PAST_EVAL_INTERVAL != 0 and i % MCTS_EVAL_INTERVAL != 0
     ]
-    axes[1, 1].plot(eval_iterations, training_history['win_rate'], marker='o')
+    axes[1, 1].plot(eval_iterations, training_history['win_rate']['random'], marker='o')
     axes[1, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
     axes[1, 1].set_title('Win Rate vs Random Policy')
     axes[1, 1].set_xlabel('Iteration')
     axes[1, 1].set_ylabel('Win Rate')
     axes[1, 1].legend()
     axes[1, 1].grid(True)
+
+    # Win Rate with Past Policy
+    eval_iterations = [
+        training_history['iteration'][i]
+        for i in range(0, len(training_history['iteration']))
+        if i % PAST_EVAL_INTERVAL == 0 and i % MCTS_EVAL_INTERVAL != 0
+    ]
+    axes[2, 0].plot(eval_iterations, training_history['win_rate']['past'], marker='o')
+    axes[2, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[2, 0].set_title('Win Rate vs Past Policy')
+    axes[2, 0].set_xlabel('Iteration')
+    axes[2, 0].set_ylabel('Win Rate')
+    axes[2, 0].legend()
+    axes[2, 0].grid(True)
+
+    # Win Rate with MCTS Policy
+    eval_iterations = [
+        training_history['iteration'][i]
+        for i in range(0, len(training_history['iteration']))
+        if i % MCTS_EVAL_INTERVAL == 0
+    ]
+    axes[2, 1].plot(eval_iterations, training_history['win_rate']['mcts'], marker='o')
+    axes[2, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[2, 1].set_title('Win Rate vs MCTS Policy')
+    axes[2, 1].set_xlabel('Iteration')
+    axes[2, 1].set_ylabel('Win Rate')
+    axes[2, 1].legend()
+    axes[2, 1].grid(True)
 
     plt.tight_layout()
     plot_path = results_dir / f"training_curves_{BOARD_SIZE}x{BOARD_SIZE}.png"
@@ -363,13 +428,17 @@ def plot_training_curves(training_history, best_win_rate):
     plt.close()
 
 
-def final_evaluation(actor_1, actor_2, env, best_win_rate):
+def final_evaluation(actor_1, actor_2, device_0: torch.device, device_1: torch.device, env, best_win_rate):
     """Perform final evaluation with 100 games."""
     print("\n" + "=" * 60)
     print(f"FINAL EVALUATION - {EVAL_GAMES} Games")
     print("=" * 60)
     
-    final_eval = evaluate_agent(actor_1, actor_2, env, n_games=EVAL_GAMES)
+    final_eval = evaluate_agent(
+        actor_1, actor_2,
+        device_0=device_0, device_1=device_1,
+        env=env, n_games=EVAL_GAMES
+    )
 
     print(f"\nFinal Results:")
     print(f"  Total Win Rate: {final_eval['win_rate']:.1%}")
@@ -491,10 +560,10 @@ def main():
     )
 
     # 9. Plot results
-    plot_training_curves(training_history, best_win_rate)
+    plot_training_curves(training_history)
 
     # 10. Final evaluation
-    final_evaluation(actor, mcts_policy, evaluate_env, best_win_rate)
+    final_evaluation(actor, mcts_policy, device_0=DEVICE, device_1=STORAGE_DEVICE, env=evaluate_env, best_win_rate=best_win_rate)
 
 
 if __name__ == "__main__":

@@ -270,7 +270,7 @@ def main():
     game = HexGamePlayer(
         checkpoint_path=str(checkpoint_path),
         board_size=BOARD_SIZE,
-        human_first=False
+        human_first=True
     )
     
     # Start playing

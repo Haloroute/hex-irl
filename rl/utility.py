@@ -195,6 +195,8 @@ def check_params_changed(model: nn.Module, model_name: str, old_params: dict) ->
 def evaluate_agent(
     actor_0,
     actor_1,
+    device_0: torch.device,
+    device_1: torch.device,
     env: HexEnv, 
     n_games: int = 50
 ) -> dict:
@@ -204,6 +206,8 @@ def evaluate_agent(
     Args:
         actor_0: Actor network (ProbabilisticActor)
         actor_1: Actor network (ProbabilisticActor/MaskedRandomPolicy)
+        device_0: Device for actor_0
+        device_1: Device for actor_1
         env: Game environment (HexEnv), must be single-instance
         n_games: Number of games to play
 
@@ -223,25 +227,25 @@ def evaluate_agent(
     with torch.no_grad():
         # Play as Player 0 (Red)
         for _ in tqdm(range(games_as_p0), desc="Evaluating as P0", leave=False):
-            td = env.reset().to(DEVICE)
+            tensordict = env.reset()
             done = False
             step_count = 0
 
             while not done and step_count < 100:
                 # Get current player
-                current_player = int(td['observation'][0, 0, 2].item())
+                current_player = int(tensordict['observation'][0, 0, 2].item())
 
                 # Actor's turn
                 if current_player == 0:  # Actor 0's turn
-                    td = td.to(DEVICE)
-                    td = actor_0(td)
+                    tensordict = tensordict.to(device_0)
+                    tensordict = actor_0(tensordict)
                 else:  # Actor 1's turn
-                    td = td.to(STORAGE_DEVICE)
-                    td = actor_1(td)
+                    tensordict = tensordict.to(device_1)
+                    tensordict = actor_1(tensordict)
 
                 # Step the environment
-                td = env.step(td)['next']
-                done = td['done'].item()
+                tensordict = env.step(tensordict)['next']
+                done = tensordict['done'].item()
                 step_count += 1
 
                 # Check whether P0 won
@@ -251,25 +255,25 @@ def evaluate_agent(
 
         # Play as Player 1 (Blue)
         for _ in tqdm(range(games_as_p1), desc="Evaluating as P1", leave=False):
-            td = env.reset().to(DEVICE)
+            tensordict = env.reset()
             done = False
             step_count = 0
 
             while not done and step_count < 100:
                 # Get current player
-                current_player = int(td['observation'][0, 0, 2].item())
+                current_player = int(tensordict['observation'][0, 0, 2].item())
 
                 # Actor's turn
                 if current_player == 1:  # Actor 0's turn
-                    td = td.to(DEVICE)
-                    td = actor_0(td)
+                    tensordict = tensordict.to(device_0)
+                    tensordict = actor_0(tensordict)
                 else:  # Actor 1's turn
-                    td = td.to(STORAGE_DEVICE)
-                    td = actor_1(td)
+                    tensordict = tensordict.to(device_1)
+                    tensordict = actor_1(tensordict)
 
                 # Step the environment
-                td = env.step(td)['next']
-                done = td['done'].item()
+                tensordict = env.step(tensordict)['next']
+                done = tensordict['done'].item()
                 step_count += 1
 
                 # Check whether P0 won

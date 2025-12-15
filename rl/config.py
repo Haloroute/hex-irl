@@ -29,12 +29,12 @@ N_CHANNEL = 5  # Number of input channels (Red, Blue, Current Player, Valid Boar
 # MODEL ARCHITECTURE
 # ---------------------------------
 MODEL_PARAMS = {
-    "conv_layers": [(32, 3)],  # List of (out_channels, kernel_size) tuples
-    "n_encoder_layers": 1,  # Number of transformer encoder layers
+    "conv_layers": [(64, 3), (128, 3), (256, 3)],  # List of (out_channels, kernel_size) tuples
+    "n_encoder_layers": 2,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
-    "n_heads": 2,  # Number of attention heads
-    "d_ff": 128,  # Feedforward network dimension
-    "dropout": 0.01,  # Dropout rate
+    "n_heads": 4,  # Number of attention heads
+    "d_ff": 1024,  # Feedforward network dimension
+    "dropout": 0.001,  # Dropout rate
     "output_flatten": True,  # Must be True for RL agents
 }
 
@@ -62,6 +62,7 @@ GRAD_CLIP_NORM = 1.0  # Maximum norm for gradient clipping
 # Logging and Evaluation
 LOG_INTERVAL = 10  # Log and evaluate every N iterations
 RANDOM_EVAL_INTERVAL = 100  # Evaluate using random policy every N iterations
+PAST_EVAL_INTERVAL = 200  # Evaluate against past actor every N iterations
 MCTS_EVAL_INTERVAL = 1000  # Evaluate using MCTS policy every N iterations
 EVAL_GAMES = 100  # Number of games for evaluation against random policy
 MCTS_ITERMAX = 100  # MCTS iterations for evaluation
