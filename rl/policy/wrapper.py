@@ -9,40 +9,96 @@ from rl.model.network import HexModel
 
 
 class ActorWrapper(nn.Module):
-    """Bọc TransformerQL_AC, chỉ trả về 'logits'."""
-    def __init__(self, model: HexModel):
+    """
+    Bọc HexModel (Actor) với logic Canonicalization.
+    Input: (N, H, W, 5) -> Output: Logits (N, H*W)
+    """
+    def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model # Tham chiếu đến model chung
 
     def forward(self, observation: Tensor, action_mask: Tensor) -> tuple[Tensor, Tensor]:
-        # Đảm bảo action_mask có shape (N, H*W)
-        if observation.dim() > 3:
-            action_mask = action_mask.view(observation.shape[0], -1) # (N, H*W)
-        elif observation.dim() == 3:
-            action_mask = action_mask.view(-1) # (H*W)
-        else:
-            raise ValueError("Observation tensor must have at least 3 dimensions (H, W, C) and at most 4 dimensions (N, H, W, C).")
+        # Xử lý batch dimension nếu thiếu
+        had_batch_dim = observation.dim() == 4
+        if not had_batch_dim:
+            observation = observation.unsqueeze(0)
+            action_mask = action_mask.unsqueeze(0)
 
-        # Chạy model chung, chỉ lấy đầu ra đầu tiên
-        logits = self.model(observation) # logits shape (N, H*W) (hoặc (H*W) nếu không có batch)
+        N, H, W, C = observation.shape
+        
+        # 1. Xác định Player 1 (Blue)
+        player_mask = (observation[..., 0, 0, 2] > 0.5) 
 
-        # logits[~action_mask] = -torch.inf # Áp dụng mask
+        # 2. Chuẩn bị Input (Bỏ kênh 2 - Current Player)
+        obs_input = observation[..., [0, 1, 3, 4]].clone()
+
+        # 3. Canonicalize cho Player 1
+        if player_mask.any():
+            obs_input[player_mask] = obs_input[player_mask].transpose(1, 2)
+            r = obs_input[player_mask, ..., 0].clone()
+            b = obs_input[player_mask, ..., 1].clone()
+            obs_input[player_mask, ..., 0] = b
+            obs_input[player_mask, ..., 1] = r
+
+        # 4. Chạy Model
+        logits = self.model(obs_input)
+
+        # 5. Reshape và xoay ngược
+        # Sau transpose, Player 1 có shape (W, H), Player 0 vẫn là (H, W)
+        # Model output flatten theo row-major, nên cần reshape đúng
+        logits = logits.view(N, H, W)  # Reshape về grid
+
+        if player_mask.any():
+            # Player 1: output đang là (H, W) nhưng thực tế là (W, H) của board gốc
+            # Transpose lại để về đúng tọa độ board gốc
+            logits[player_mask] = logits[player_mask].transpose(1, 2)
+
+        # 6. Flatten
+        logits = logits.reshape(N, -1)
+        action_mask = action_mask.view(N, -1)
+
+        if not had_batch_dim:
+            logits = logits.squeeze(0)
+            action_mask = action_mask.squeeze(0)
+
         return logits, action_mask
 
 
 class CriticWrapper(nn.Module):
-    """Bọc HexModel, chỉ trả về 'action_value'."""
-    def __init__(self, model: HexModel):
+    """
+    Bọc HexModel (Critic) với logic Canonicalization.
+    Input: (N, H, W, 5) -> Output: Q-Values (N, H*W)
+    """
+    def __init__(self, model: nn.Module):
         super().__init__()
         self.model = model # Tham chiếu đến CÙNG model chung
 
     def forward(self, observation: Tensor) -> Tensor:
-        # action_mask = action_mask.view(observation.shape[0], -1)
+        had_batch_dim = observation.dim() == 4
+        if not had_batch_dim:
+            observation = observation.unsqueeze(0)
 
-        # Chạy model chung, chỉ lấy đầu ra thứ hai
-        q_values = self.model(observation) # q_values shape (N, H*W)
+        N, H, W, _ = observation.shape
+        player_mask = (observation[..., 0, 0, 2] > 0.5)
+        obs_input = observation[..., [0, 1, 3, 4]].clone()
 
-        # q_values[~action_mask] = -torch.inf # Áp dụng mask
+        if player_mask.any():
+            obs_input[player_mask] = obs_input[player_mask].transpose(1, 2)
+            r = obs_input[player_mask, ..., 0].clone()
+            b = obs_input[player_mask, ..., 1].clone()
+            obs_input[player_mask, ..., 0] = b
+            obs_input[player_mask, ..., 1] = r
+
+        q_values = self.model(obs_input) 
+        q_values = q_values.view(N, H, W)
+
+        if player_mask.any():
+            q_values[player_mask] = q_values[player_mask].transpose(1, 2)
+
+        q_values = q_values.reshape(N, -1)        
+        if not had_batch_dim:
+            q_values = q_values.squeeze(0)
+
         return q_values
 
 

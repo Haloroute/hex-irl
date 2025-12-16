@@ -162,12 +162,25 @@ class HexEnv(EnvBase):
             device=device,
             dtype=torch.float32
         ) # Reward for both players
+        self.done_spec = Composite({
+            "done": Binary(
+                shape=(1,),
+                device=device,
+                dtype=torch.bool
+            ),
+            "terminated": Binary(
+                shape=(1,),
+                device=device,
+                dtype=torch.bool
+            )
+        }) # Done and terminated flags
 
     def _reset(self, tensordict: TensorDict | None = None, **kwargs) -> TensorDict:
         # Initialize a fresh board
         board: Tensor = torch.full((self.max_board_size, self.max_board_size), -1, dtype=torch.long, device=self.device) # -1: empty, 0: player 0 (red), 1: player 1 (blue)
         current_player: int = 0 # 0: player 0 (red), 1: player 1 (blue)
-        done: Tensor = torch.tensor(False, dtype=torch.bool, device=self.device) # Game not done
+        done: Tensor = torch.tensor([False], dtype=torch.bool, device=self.device) # Game not done
+        terminated: Tensor = torch.tensor([False], dtype=torch.bool, device=self.device) # Game not done
 
         # Create fresh observation, mask, done, reward
         fresh_action: Tensor = torch.tensor([0], dtype=torch.long, device=self.device) # Placeholder action
@@ -179,12 +192,14 @@ class HexEnv(EnvBase):
         fresh_observation[..., 4] = self.swap_rule * 1.0 # Swap rule indicator channel
         fresh_action_mask: Tensor = self.valid_board.clone().bool().flatten() # (max_board_size ** 2,) Valid move mask
         fresh_done: Tensor = done # Not done
+        fresh_terminated: Tensor = terminated # Not done
 
         fresh_tensordict: TensorDict = TensorDict({
             "action": fresh_action,
             "observation": fresh_observation,
             "action_mask": fresh_action_mask,
-            "done": fresh_done
+            "done": fresh_done,
+            "terminated": fresh_terminated
         }, device=self.device)
         return fresh_tensordict
 
@@ -230,10 +245,12 @@ class HexEnv(EnvBase):
 
         if self._check_done(next_observation, current_player):
             next_reward = torch.tensor([1.0], dtype=torch.float32, device=self.device)
-            next_done = torch.tensor(True, dtype=torch.bool, device=self.device)
+            next_done = torch.tensor([True], dtype=torch.bool, device=self.device)
+            next_terminated = torch.tensor([True], dtype=torch.bool, device=self.device)
         else:
             next_reward = torch.tensor([0.0], dtype=torch.float32, device=self.device)
-            next_done = torch.tensor(False, dtype=torch.bool, device=self.device)
+            next_done = torch.tensor([False], dtype=torch.bool, device=self.device)
+            next_terminated = torch.tensor([False], dtype=torch.bool, device=self.device)
             current_player = 1 - current_player
 
         swap_available_next = bool(self.swap_rule and (total_stones == 0) and not next_done) # Update swap availability for next state
@@ -250,6 +267,7 @@ class HexEnv(EnvBase):
             "observation": next_observation,
             "action_mask": next_action_mask,
             "done": next_done,
+            "terminated": next_terminated,
             "reward": next_reward
         }, device=self.device)
 

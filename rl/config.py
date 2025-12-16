@@ -23,17 +23,17 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 BOARD_SIZE = 5  # Size of the Hex board (board_size x board_size)
 MAX_BOARD_SIZE = 5  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
-N_CHANNEL = 5  # Number of input channels (Red, Blue, Current Player, Valid Board)
+N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Board)
 
 # ---------------------------------
 # MODEL ARCHITECTURE
 # ---------------------------------
 MODEL_PARAMS = {
-    "conv_layers": [(64, 3), (128, 3), (256, 3)],  # List of (out_channels, kernel_size) tuples
-    "n_encoder_layers": 2,  # Number of transformer encoder layers
+    "conv_layers": [(64, 3)],  # List of (out_channels, kernel_size) tuples
+    "n_encoder_layers": 1,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
-    "d_ff": 1024,  # Feedforward network dimension
+    "d_ff": 512,  # Feedforward network dimension
     "dropout": 0.001,  # Dropout rate
     "output_flatten": True,  # Must be True for RL agents
 }

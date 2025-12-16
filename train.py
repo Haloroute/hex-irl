@@ -24,6 +24,7 @@ from torchrl.envs import SerialEnv, TransformedEnv
 from torchrl.envs.transforms import ActionMask
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 from torchrl.objectives import SoftUpdate
+from torchrl.objectives.sac import DiscreteSACLoss
 
 # Import custom modules
 from rl.environment import HexEnv
@@ -227,18 +228,6 @@ def training_loop(
             print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
             print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
             print(f"Buffer Size: {len(replay_buffer)}")
-            
-            # Save checkpoint
-            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
-            torch.save({
-                'iteration': iteration,
-                'actor_state_dict': actor.module[0].model.state_dict(),
-                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'win_rate': win_rate,
-                'training_history': training_history
-            }, checkpoint_path)
-            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
 
             # Save best model
             if win_rate > best_win_rate:
@@ -254,6 +243,18 @@ def training_loop(
                 }, checkpoint_path)
                 print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
             print(f"{'='*60}\n")
+                        
+            # Save checkpoint
+            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
+            torch.save({
+                'iteration': iteration,
+                'actor_state_dict': actor.module[0].model.state_dict(),
+                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'win_rate': win_rate,
+                'training_history': training_history
+            }, checkpoint_path)
+            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
 
             # Early stopping
             if best_win_rate > 0.8:

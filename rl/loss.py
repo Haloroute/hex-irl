@@ -7,7 +7,7 @@ from torchrl.objectives.sac import DiscreteSACLoss
 
 class NegamaxDiscreteSACLoss(DiscreteSACLoss):
     def _compute_target(self, tensordict) -> Tensor:
-        r"""Value network for SAC v2.
+        r"""Value network for SAC v2 with Negamax adjustment for zero-sum games.
 
         SAC v2 is based on a value estimate of the form:
 
@@ -46,7 +46,7 @@ class NegamaxDiscreteSACLoss(DiscreteSACLoss):
 
                 # like in continuous SAC, we take the minimum of the value ensemble and subtract the entropy term
                 next_state_value = (
-                    next_action_value.min(0)[0] - self._alpha * next_log_prob
+                    next_action_value.min(0)[0] - self._alpha.detach() * next_log_prob
                 )
                 # unlike in continuous SAC, we can compute the exact expectation over all discrete actions
                 next_state_value = (next_prob * next_state_value).sum(-1).unsqueeze(-1)
@@ -71,7 +71,7 @@ class NegamaxDiscreteSACLoss(DiscreteSACLoss):
                 )
                 # like in continuous SAC, we take the minimum of the value ensemble and subtract the entropy term
                 next_state_value = (
-                    next_action_value.min(0)[0] - self._alpha * next_log_prob
+                    next_action_value.min(0)[0] - self._alpha.detach() * next_log_prob
                 )
                 # unlike in continuous SAC, we can compute the exact expectation over all discrete actions
                 next_state_value = (next_prob * next_state_value).sum(-1).unsqueeze(-1)
@@ -105,7 +105,7 @@ class NegamaxDiscreteSACLoss(DiscreteSACLoss):
             )
 
         # like in continuous SAC, we take the entropy term and subtract the minimum of the value ensemble
-        loss = self._alpha * log_prob - min_q
+        loss = self._alpha.detach() * log_prob - min_q
         # unlike in continuous SAC, we can compute the exact expectation over all discrete actions
         loss = (prob * loss).sum(-1)
 
