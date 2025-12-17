@@ -4,8 +4,6 @@ Hex Game RL Training Script using Discrete SAC with Negamax
 This script trains an agent to play Hex using:
 - Transformer-based policy and Q-value networks
 - Discrete SAC with Negamax adjustment for zero-sum games
-- Soft Actor-Critic with automatic entropy tuning
-- Experience replay with warmup phase
 """
 
 import copy, math, torch
@@ -23,19 +21,17 @@ from torchrl.data.replay_buffers import SamplerWithoutReplacement
 from torchrl.envs import SerialEnv, TransformedEnv
 from torchrl.envs.transforms import ActionMask
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
-from torchrl.objectives import SoftUpdate
-from torchrl.objectives.sac import DiscreteSACLoss
 
 # Import custom modules
 from rl.environment import HexEnv
+from rl.loss import SimpleLoss
 from rl.model.network import HexModel
 from rl.policy.mcts import MCTSPolicy
 from rl.policy.random import MaskedRandomPolicy
-from rl.policy.wrapper import ActorWrapper, CriticWrapper
-from rl.loss import NegamaxDiscreteSACLoss
+from rl.policy.wrapper import ModelWrapper
 from rl.utility import (
-    init_params, 
-    get_optimizer_params, 
+    init_params,
+    get_optimizer_params,
     merge_optimizer_params,
     check_params_changed,
     evaluate_agent
@@ -51,62 +47,36 @@ from rl.config import (
 )
 
 
-def test_components():
-    """Test all components before training."""
-    print("=" * 60)
-    print("COMPONENT TESTING")
-    print("=" * 60)
+# def test_components():
+#     """Test all components before training."""
+#     print("=" * 60)
+#     print("COMPONENT TESTING")
+#     print("=" * 60)
     
-    # Test environment
-    print("\n1. Testing Environment...")
-    test_env = HexEnv(
-        board_size=BOARD_SIZE,
-        max_board_size=MAX_BOARD_SIZE,
-        device=DEVICE
-    )
-    test_td = test_env.reset()
-    print(f"   ✓ Reset output keys: {test_td.keys()}")
-    print(f"   ✓ Observation shape: {test_td['observation'].shape}")
-    print(f"   ✓ Action mask shape: {test_td['action_mask'].shape}")
+#     # Test environment
+#     print("\n1. Testing Environment...")
+#     test_env = HexEnv(
+#         board_size=BOARD_SIZE,
+#         max_board_size=MAX_BOARD_SIZE,
+#         device=DEVICE
+#     )
+#     test_td = test_env.reset()
+#     print(f"   ✓ Reset output keys: {test_td.keys()}")
+#     print(f"   ✓ Observation shape: {test_td['observation'].shape}")
+#     print(f"   ✓ Action mask shape: {test_td['action_mask'].shape}")
     
-    test_td = test_env.rand_step(test_td)
-    print(f"   ✓ Step completed successfully")
+#     test_td = test_env.rand_step(test_td)
+#     print(f"   ✓ Step completed successfully")
     
-    # Test model
-    print("\n2. Testing Model...")
-    test_model = HexModel(**MODEL_PARAMS).to(DEVICE)
-    test_input = test_td['observation'].unsqueeze(0)
-    test_output = test_model(test_input)
-    print(f"   ✓ Model output shape: {test_output.shape}")
+#     # Test model
+#     print("\n2. Testing Model...")
+#     test_model = HexModel(**MODEL_PARAMS).to(DEVICE)
+#     test_input = test_td['observation'].unsqueeze(0)
+#     test_output = test_model(test_input)
+#     print(f"   ✓ Model output shape: {test_output.shape}")
     
-    print("\n✅ All components working!")
-    print("=" * 60)
-
-
-def warmup_phase(replay_buffer, warmup_collector):
-    """Execute warmup phase with random exploration."""
-    print("=" * 60)
-    print("WARMUP PHASE - Random Exploration")
-    print("=" * 60)
-    
-    current_frames = 0
-    warmup_iterations = 0
-    
-    for warmup_batch in warmup_collector:
-        warmup_batch = warmup_batch.reshape(-1)
-        replay_buffer.extend(warmup_batch)
-        current_frames += len(warmup_batch)
-        warmup_iterations += 1
-        
-        if warmup_iterations % 5 == 0:
-            print(f"Warmup Progress: {current_frames}/{WARMUP_FRAMES} frames "
-                  f"({current_frames/WARMUP_FRAMES*100:.1f}%) | "
-                  f"Buffer Size: {len(replay_buffer)}")
-    
-    print(f"\n✓ Warmup completed! Buffer size: {len(replay_buffer)}")
-    print("=" * 60)
-    
-    return current_frames
+#     print("\n✅ All components working!")
+#     print("=" * 60)
 
 
 def training_loop(
@@ -478,49 +448,27 @@ def main():
     )
 
     # 2. Create models
-    actor_model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
-    qvalue_model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
-    init_params(actor_model)
-    init_params(qvalue_model)
+    model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
+    init_params(model)
 
     # 3. Create wrappers and policy
-    actor_network = TensorDictModule(
-        ActorWrapper(actor_model),
+    network = TensorDictModule(
+        ModelWrapper(model),
         in_keys=["observation", "action_mask"],
         out_keys=["logits", "mask"]
     )
-    qvalue_network = TensorDictModule(
-        CriticWrapper(qvalue_model),
-        in_keys=["observation"],
-        out_keys=["action_value"]
-    )
     actor = ProbabilisticActor(
-        actor_network,
+        network,
         in_keys=["logits", "mask"],
         spec=serial_env.action_spec,
         distribution_class=MaskedCategorical
     )
 
     # 4. Create loss function
-    loss_fn = NegamaxDiscreteSACLoss(
-        actor_network=actor,
-        qvalue_network=qvalue_network,
-        action_space=serial_env.action_spec,
-        num_actions=serial_env.action_spec.n,
-        skip_done_states=True,
-        deactivate_vmap=True
-    ).to(DEVICE)
+    loss_fn = SimpleLoss()
 
     # 5. Create optimizer
-    actor_params_groups = get_optimizer_params(actor_model, WEIGHT_DECAY)
-    qvalue_params_groups = get_optimizer_params(qvalue_model, WEIGHT_DECAY)
-    combined_params = merge_optimizer_params(
-        loss_fn_params=loss_fn.parameters(),
-        actor_groups=actor_params_groups,
-        qvalue_groups=qvalue_params_groups
-    )
-    optimizer = optim.AdamW(params=combined_params, lr=LR, weight_decay=WEIGHT_DECAY)
-    updater = SoftUpdate(loss_module=loss_fn, tau=TAU)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     # 6. Create replay buffer
     replay_buffer = ReplayBuffer(
@@ -529,28 +477,7 @@ def main():
         batch_size=BATCH_SIZE
     )
 
-    # 7. Warmup phase
-    warmup_collector = SyncDataCollector(
-        create_env_fn=serial_env,
-        policy=MaskedRandomPolicy(serial_env.action_spec),
-        frames_per_batch=N_FRAMES_PER_BATCH,
-        total_frames=WARMUP_FRAMES,
-        device=DEVICE,
-        storing_device=STORAGE_DEVICE,
-        env_device=STORAGE_DEVICE
-    )
-    total_frames_collected = warmup_phase(replay_buffer, warmup_collector)
-
-    # 8. Main training loop
-    collector = SyncDataCollector(
-        create_env_fn=serial_env,
-        policy=actor,
-        frames_per_batch=N_FRAMES_PER_BATCH,
-        total_frames=TOTAL_FRAMES - WARMUP_FRAMES,
-        device=DEVICE,
-        storing_device=STORAGE_DEVICE,
-        env_device=STORAGE_DEVICE
-    )
+    # 7. Training loop
     random_policy = MaskedRandomPolicy(serial_env.action_spec)
     mcts_policy = MCTSPolicy(evaluate_env, itermax=MCTS_ITERMAX)
 
