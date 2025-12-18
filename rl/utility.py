@@ -4,6 +4,7 @@ import torch.nn as nn
 
 from torch import Tensor
 from torchrl.envs import EnvBase
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 from tqdm.auto import tqdm
 
 from rl.config import DEVICE, STORAGE_DEVICE
@@ -224,7 +225,7 @@ def evaluate_agent(
     wins_as_p0 = wins_as_p1 = 0
     games_as_p0 = games_as_p1 = n_games
 
-    with torch.no_grad():
+    with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
         # Play as Player 0 (Red)
         for _ in tqdm(range(games_as_p0), desc="Evaluating as P0", leave=False):
             tensordict = env.reset()

@@ -15,14 +15,19 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
 from torchrl.collectors import SyncDataCollector
 from torchrl.data import LazyTensorStorage, ReplayBuffer
 from torchrl.data.replay_buffers import SamplerWithoutReplacement
-from torchrl.envs import SerialEnv, TransformedEnv
+from torchrl.envs import EnvBase, SerialEnv, TransformedEnv
 from torchrl.envs.transforms import ActionMask
+from torchrl.envs.utils import ExplorationType, set_exploration_type
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
+from tqdm.auto import tqdm
 
 # Import custom modules
+from rl.dataloader import HexDataCollector, HexRolloutDataset
 from rl.environment import HexEnv
 from rl.loss import SimpleLoss
 from rl.model.network import HexModel
@@ -39,8 +44,9 @@ from rl.utility import (
 from rl.config import (
     DEVICE, STORAGE_DEVICE,
     BOARD_SIZE, MAX_BOARD_SIZE, SWAP_RULE, N_CHANNEL,
-    MODEL_PARAMS, BUFFER_SIZE, N_FRAMES_PER_BATCH,
-    BATCH_SIZE, LR, WEIGHT_DECAY,
+    MODEL_PARAMS, BUFFER_SIZE, MAX_N_STEPS, N_EPISODES_PER_EPOCH, N_MEMMAP_CHUNKS,
+    INITIAL_TEMPERATURE, FINAL_TEMPERATURE, DECAY_RATE,
+    N_EPOCHS, BATCH_SIZE, LR, WEIGHT_DECAY,
     TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
     LOG_INTERVAL, RANDOM_EVAL_INTERVAL, PAST_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
     CHECKPOINT_DIR, RESULTS_DIR
@@ -80,9 +86,13 @@ from rl.config import (
 
 
 def training_loop(
-    collector, replay_buffer, loss_fn, optimizer, updater,
-    actor, qvalue_network, serial_env, evaluate_env, total_frames_collected,
-    random_policy, mcts_policy
+    environment: EnvBase,
+    actor: ProbabilisticActor,
+    network: TensorDictModule,
+    loss_fn: nn.Module,
+    optimizer: optim.Optimizer,
+    collector: HexDataCollector,
+    random_policy: MaskedRandomPolicy
 ):
     """Main training loop."""
     print("\n" + "=" * 60)
@@ -90,17 +100,13 @@ def training_loop(
     print("=" * 60)
     
     # Training metrics
-    iteration = 0
-    best_win_rate = 0.0
+    n_total_frames = 0
     training_history = {
-        'iteration': [],
-        'actor_loss': [],
-        'qvalue_loss': [],
-        'alpha_loss': [],
+        'epoch': [],
+        'loss': [],
         'win_rate': {
             'random': [],
-            'past': [],
-            'mcts': []
+            'past': []
         },
         'frames': []
     }
@@ -109,288 +115,208 @@ def training_loop(
     checkpoint_dir = Path(CHECKPOINT_DIR)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create past actor for compare the performance with current actor
-    past_actor = copy.deepcopy(actor)
-    past_actor.eval()
-    for param in past_actor.parameters():
-        param.requires_grad = False
+    # START TRAINING LOOP
+    for epoch in range(N_EPOCHS):
+        print(f"\n{'='*20} Epoch {epoch+1}/{N_EPOCHS} {'='*20}\n")
 
-    # Set actor to training mode
-    actor.train()
-    
-    for batch_data in collector:
-        # A. Add new data to replay buffer
-        batch_data = batch_data.reshape(-1)
-        replay_buffer.extend(batch_data)
-        total_frames_collected += len(batch_data)
-        
-        # B. Optimization loop (UTD Ratio)
-        actor_losses = []
-        qvalue_losses = []
-        alpha_losses = []
-        
-        for opt_step in range(OPTIMIZATION_STEPS):
-            # B1. Sample batch
-            sample = replay_buffer.sample(BATCH_SIZE)
-            sample = sample.to(DEVICE)
-            
-            # B2. Compute losses
-            loss_dict = loss_fn(sample)
-            
-            total_loss = (
-                loss_dict['loss_actor'] + 
-                loss_dict['loss_qvalue'] + 
-                loss_dict['loss_alpha']
+        # Create lists to track losses
+        loss_list = []
+
+        # Create past actor for compare the performance with current actor
+        past_actor = copy.deepcopy(actor)
+        past_actor.eval()
+        for param in past_actor.parameters():
+            param.requires_grad = False
+
+        # Set temperature for current epoch
+        if network.module.temperature is not None:
+            new_temperature = max(
+                FINAL_TEMPERATURE,
+                INITIAL_TEMPERATURE * (DECAY_RATE ** epoch)
+            )
+            network.module.temperature = new_temperature
+            print(f"✓ Set temperature to {new_temperature:.4f}")
+
+        # Create training data
+        collector.collect_and_save(N_EPISODES_PER_EPOCH, save_dir="data", filename=f"epoch_{epoch+1}_data")
+
+        # Create dataset and dataloader
+        train_dataset = HexRolloutDataset(
+            data_path=Path("data"), 
+            train=True, 
+            n_memmap_chunks=N_MEMMAP_CHUNKS, 
+            device=STORAGE_DEVICE
+        )
+        val_dataset = HexRolloutDataset(
+            data_path=Path("data"),
+            train=False,
+            n_memmap_chunks=N_MEMMAP_CHUNKS,
+            device=STORAGE_DEVICE
+        )
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=lambda x: torch.stack(x))
+        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=lambda x: torch.stack(x))
+
+        # Set actor to training mode
+        actor.train()
+
+        # Training over the train dataset
+        for batch_data in (iteration := tqdm(train_loader, desc="Training Batches", leave=False)):
+            # Data preparation
+            batch_data: TensorDict = batch_data.to(DEVICE)
+            observation, action, action_mask, reward = (
+                batch_data.get('observation').to(DEVICE),
+                batch_data.get('action').to(DEVICE),
+                batch_data.get('action_mask').to(DEVICE),
+                batch_data.get('reward').to(DEVICE)
             )
             
-            # B3. Gradient descent
+            # Compute loss
+            input_data: TensorDict = TensorDict({
+                'observation': observation,
+                'action_mask': action_mask
+            })
+            logits: Tensor = network(input_data).get('logits')
+            loss: Tensor = loss_fn(logits, action, reward)
+
+            # Gradient descent
             optimizer.zero_grad()
-            total_loss.backward()
+            loss.backward()
             
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(
-                list(actor.parameters()) + list(qvalue_network.parameters()), 
+                list(actor.parameters()),
                 max_norm=GRAD_CLIP_NORM
             )            
             optimizer.step()
             
-            # B4. Soft update target network
-            updater.step()
-            
-            # Collect losses
-            actor_losses.append(loss_dict['loss_actor'].item())
-            qvalue_losses.append(loss_dict['loss_qvalue'].item())
-            alpha_losses.append(loss_dict['loss_alpha'].item())
+            # Progress bar update
+            loss_list.append(loss.item())
+            iteration.set_postfix({
+                'Train Loss': loss.item()
+            })
         
-        # C. Logging and evaluation
-        iteration += 1
-        avg_actor_loss = sum(actor_losses) / len(actor_losses)
-        avg_qvalue_loss = sum(qvalue_losses) / len(qvalue_losses)
-        avg_alpha_loss = sum(alpha_losses) / len(alpha_losses)
+        # Evaluation over the validation dataset
+        actor.eval()
+        with torch.no_grad():
+            val_loss_list = []
+            for batch_data in (val_iteration := tqdm(val_loader, desc="Validation Batches", leave=False)):
+                batch_data: TensorDict = batch_data.to(DEVICE)
+                observation, action, action_mask, reward = (
+                    batch_data.get('observation').to(DEVICE),
+                    batch_data.get('action').to(DEVICE),
+                    batch_data.get('action_mask').to(DEVICE),
+                    batch_data.get('reward').to(DEVICE)
+                )
+
+                # Compute loss
+                input_data: TensorDict = TensorDict({
+                    'observation': observation,
+                    'action_mask': action_mask
+                })
+                logits: Tensor = network(input_data).get('logits')
+                loss: Tensor = loss_fn(logits, action, reward)
+
+                # Progress bar update
+                val_loss_list.append(loss.item())
+                val_iteration.set_postfix({
+                    'Val Loss': loss.item()
+                })
+            avg_val_loss = sum(val_loss_list) / len(val_loss_list)
+            print(f"\n✓ Validation Loss: {avg_val_loss:.4f}")
+
+        # Evaluation and logging
+        avg_loss = sum(loss_list) / len(loss_list)
+        n_collected_frames = len(train_dataset)
+        n_total_frames += n_collected_frames
         
         # Store metrics
-        training_history['iteration'].append(iteration)
-        training_history['actor_loss'].append(avg_actor_loss)
-        training_history['qvalue_loss'].append(avg_qvalue_loss)
-        training_history['alpha_loss'].append(avg_alpha_loss)
-        training_history['frames'].append(total_frames_collected)
+        training_history['epoch'].append(epoch)
+        training_history['loss'].append(avg_loss)
+        training_history['frames'].append(n_total_frames)
 
-        # Evaluation against MCTS policy
-        if iteration % MCTS_EVAL_INTERVAL == 0:
-            print(f"\n{'='*60}")
-            print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
-            print(f"{'='*60}")
-            
-            # Evaluate agent
-            actor.eval()
-            eval_results = evaluate_agent(
-                actor, mcts_policy,
-                device_0=DEVICE, device_1=STORAGE_DEVICE,
-                env=evaluate_env, n_games=EVAL_GAMES
-            )
-            actor.train()
-            win_rate = eval_results['win_rate']
-            training_history['win_rate']['mcts'].append(win_rate)
-            
-            print("Evaluation against MCTS Policy:")
-            print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
-            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
-            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
-            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
-            print(f"Buffer Size: {len(replay_buffer)}")
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch + 1} | Frames: {n_total_frames:,}")
+        print(f"Loss: {avg_loss:.4f}")
+        print(f"{'='*60}")
 
-            # Save best model
-            if win_rate > best_win_rate:
-                best_win_rate = win_rate
-                checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_best.pth"
-                torch.save({
-                    'iteration': iteration,
-                    'actor_state_dict': actor.module[0].model.state_dict(),
-                    'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'win_rate': win_rate,
-                    'training_history': training_history
-                }, checkpoint_path)
-                print(f"✓ New Best Model Saved! (WinRate: {best_win_rate:.1%})")
-            print(f"{'='*60}\n")
-                        
-            # Save checkpoint
-            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
-            torch.save({
-                'iteration': iteration,
-                'actor_state_dict': actor.module[0].model.state_dict(),
-                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'win_rate': win_rate,
-                'training_history': training_history
-            }, checkpoint_path)
-            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
-
-            # Early stopping
-            if best_win_rate > 0.8:
-                print("🎉 Target win rate achieved! Stopping training.")
-                break
-
-        # Evaluate against past policy
-        elif iteration % PAST_EVAL_INTERVAL == 0:
-            print(f"\n{'='*60}")
-            print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
-            print(f"{'='*60}")
-
-            # Evaluate agent
-            actor.eval()
-            eval_results = evaluate_agent(
-                actor, past_actor,
-                device_0=DEVICE, device_1=DEVICE,
-                env=evaluate_env, n_games=EVAL_GAMES
-            )
-            past_actor = copy.deepcopy(actor) # Update past actor
-            past_actor.eval()
-            for param in past_actor.parameters():
-                param.requires_grad = False
-            actor.train()
-            win_rate = eval_results['win_rate']
-            training_history['win_rate']['past'].append(win_rate)
-
-            print("Evaluation against Past Policy:")
-            print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
-            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
-            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
-            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
-            print(f"Buffer Size: {len(replay_buffer)}")
-
-            # Save checkpoint
-            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
-            torch.save({
-                'iteration': iteration,
-                'actor_state_dict': actor.module[0].model.state_dict(),
-                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'win_rate': win_rate,
-                'training_history': training_history
-            }, checkpoint_path)
-            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
-            print(f"{'='*60}\n")
+        # Evaluation against past policy
+        eval_results = evaluate_agent(
+            actor, past_actor,
+            device_0=DEVICE, device_1=STORAGE_DEVICE,
+            env=environment, n_games=EVAL_GAMES
+        )
+        win_rate = eval_results['win_rate']
+        training_history['win_rate']['past'].append(win_rate)
+        
+        print("Evaluation against Past Itself:")
+        print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+        print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+        print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
         # Evaluate against random policy
-        elif iteration % RANDOM_EVAL_INTERVAL == 0:
-            print(f"\n{'='*60}")
-            print(f"Iteration {iteration} | Frames: {total_frames_collected:,}/{TOTAL_FRAMES:,}")
-            print(f"{'='*60}")
+        eval_results = evaluate_agent(
+            actor, random_policy,
+            device_0=DEVICE, device_1=STORAGE_DEVICE,
+            env=environment, n_games=EVAL_GAMES
+        )
+        win_rate = eval_results['win_rate']
+        training_history['win_rate']['random'].append(win_rate)
 
-            # Evaluate agent
-            actor.eval()
-            eval_results = evaluate_agent(
-                actor, random_policy,
-                device_0=DEVICE, device_1=STORAGE_DEVICE,
-                env=evaluate_env, n_games=EVAL_GAMES
-            )
-            actor.train()
-            win_rate = eval_results['win_rate']
-            training_history['win_rate']['random'].append(win_rate)
+        print("Evaluation against Random Policy:")
+        print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+        print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+        print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
-            print("Evaluation against Random Policy:")
-            print(f"Loss - Actor: {avg_actor_loss:.4f} | QValue: {avg_qvalue_loss:.4f} | Alpha: {avg_alpha_loss:.4f}")
-            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
-            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
-            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
-            print(f"Buffer Size: {len(replay_buffer)}")
+        # Save checkpoint
+        checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_e{epoch}.pth"
+        torch.save({
+            'epoch': epoch,
+            'state_dict': network.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'win_rate': win_rate,
+            'training_history': training_history
+        }, checkpoint_path)
 
-            # Save checkpoint
-            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_iter{iteration}.pth"
-            torch.save({
-                'iteration': iteration,
-                'actor_state_dict': actor.module[0].model.state_dict(),
-                'qvalue_state_dict': qvalue_network.module.model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'win_rate': win_rate,
-                'training_history': training_history
-            }, checkpoint_path)
-            print(f"✓ Checkpoint Saved! (WinRate: {best_win_rate:.1%})")
-            print(f"{'='*60}\n")
-
-        # Regular logging
-        elif iteration % LOG_INTERVAL == 0:
-            print(f"Iter {iteration} | Frames: {total_frames_collected:,} | "
-                    f"Loss: A={avg_actor_loss:.3f} Q={avg_qvalue_loss:.3f} α={avg_alpha_loss:.3f}")
+        print(f"✓ Checkpoint Saved! (WinRate: {win_rate:.1%})")
+        print(f"{'='*60}\n")
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETED")
-    print(f"Best Win Rate: {best_win_rate:.1%}")
     print("=" * 60)
     
-    return training_history, best_win_rate
+    return training_history
 
 
 def plot_training_curves(training_history):
     """Plot and save training curves."""
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
-    
     fig, axes = plt.subplots(3, 2, figsize=(15, 10))
-    
-    # Actor Loss
-    axes[0, 0].plot(training_history['iteration'], training_history['actor_loss'])
-    axes[0, 0].set_title('Actor Loss')
-    axes[0, 0].set_xlabel('Iteration')
+
+    # Loss
+    axes[0, 0].plot(training_history['epoch'], training_history['loss'])
+    axes[0, 0].set_title('Loss')
+    axes[0, 0].set_xlabel('epoch')
     axes[0, 0].set_ylabel('Loss')
     axes[0, 0].grid(True)
-    
-    # QValue Loss
-    axes[0, 1].plot(training_history['iteration'], training_history['qvalue_loss'])
-    axes[0, 1].set_title('Q-Value Loss')
-    axes[0, 1].set_xlabel('Iteration')
-    axes[0, 1].set_ylabel('Loss')
-    axes[0, 1].grid(True)
-    
-    # Alpha Loss
-    axes[1, 0].plot(training_history['iteration'], training_history['alpha_loss'])
-    axes[1, 0].set_title('Alpha Loss (Temperature)')
-    axes[1, 0].set_xlabel('Iteration')
-    axes[1, 0].set_ylabel('Loss')
-    axes[1, 0].grid(True)
-
-    # Win Rate with Random Policy
-    eval_iterations = [
-        training_history['iteration'][i]
-        for i in range(0, len(training_history['iteration']))
-        if i % RANDOM_EVAL_INTERVAL == 0 and i % PAST_EVAL_INTERVAL != 0 and i % MCTS_EVAL_INTERVAL != 0
-    ]
-    axes[1, 1].plot(eval_iterations, training_history['win_rate']['random'], marker='o')
-    axes[1, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[1, 1].set_title('Win Rate vs Random Policy')
-    axes[1, 1].set_xlabel('Iteration')
-    axes[1, 1].set_ylabel('Win Rate')
-    axes[1, 1].legend()
-    axes[1, 1].grid(True)
 
     # Win Rate with Past Policy
-    eval_iterations = [
-        training_history['iteration'][i]
-        for i in range(0, len(training_history['iteration']))
-        if i % PAST_EVAL_INTERVAL == 0 and i % MCTS_EVAL_INTERVAL != 0
-    ]
-    axes[2, 0].plot(eval_iterations, training_history['win_rate']['past'], marker='o')
+    axes[2, 0].plot(training_history['epoch'], training_history['win_rate']['past'], marker='o')
     axes[2, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
     axes[2, 0].set_title('Win Rate vs Past Policy')
-    axes[2, 0].set_xlabel('Iteration')
+    axes[2, 0].set_xlabel('Epoch')
     axes[2, 0].set_ylabel('Win Rate')
     axes[2, 0].legend()
     axes[2, 0].grid(True)
 
-    # Win Rate with MCTS Policy
-    eval_iterations = [
-        training_history['iteration'][i]
-        for i in range(0, len(training_history['iteration']))
-        if i % MCTS_EVAL_INTERVAL == 0
-    ]
-    axes[2, 1].plot(eval_iterations, training_history['win_rate']['mcts'], marker='o')
-    axes[2, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[2, 1].set_title('Win Rate vs MCTS Policy')
-    axes[2, 1].set_xlabel('Iteration')
-    axes[2, 1].set_ylabel('Win Rate')
-    axes[2, 1].legend()
-    axes[2, 1].grid(True)
+    # Win Rate with Random Policy
+    axes[1, 1].plot(training_history['epoch'], training_history['win_rate']['random'], marker='o')
+    axes[1, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[1, 1].set_title('Win Rate vs Random Policy')
+    axes[1, 1].set_xlabel('Epoch')
+    axes[1, 1].set_ylabel('Win Rate')
+    axes[1, 1].legend()
+    axes[1, 1].grid(True)
 
     plt.tight_layout()
     plot_path = results_dir / f"training_curves_{BOARD_SIZE}x{BOARD_SIZE}.png"
@@ -399,7 +325,7 @@ def plot_training_curves(training_history):
     plt.close()
 
 
-def final_evaluation(actor_1, actor_2, device_0: torch.device, device_1: torch.device, env, best_win_rate):
+def final_evaluation(env: EnvBase, actor_1, actor_2, device_0: torch.device, device_1: torch.device):
     """Perform final evaluation with 100 games."""
     print("\n" + "=" * 60)
     print(f"FINAL EVALUATION - {EVAL_GAMES} Games")
@@ -417,7 +343,6 @@ def final_evaluation(actor_1, actor_2, device_0: torch.device, device_1: torch.d
           f"({final_eval['wins_as_p0']/final_eval['games_as_p0']:.1%})")
     print(f"  Wins as Player 1 (Blue): {final_eval['wins_as_p1']}/{final_eval['games_as_p1']} "
           f"({final_eval['wins_as_p1']/final_eval['games_as_p1']:.1%})")
-    print(f"\nBest Win Rate During Training: {best_win_rate:.1%}")
     print("=" * 60)
 
 
@@ -438,60 +363,68 @@ def main():
         max_board_size=MAX_BOARD_SIZE, 
         device=STORAGE_DEVICE
     )
-    serial_env = TransformedEnv(
-        SerialEnv(num_workers=1, create_env_fn=create_hex_env),
-        ActionMask()
-    )
-    evaluate_env = TransformedEnv(
+    # serial_env = TransformedEnv(
+    #     SerialEnv(num_workers=1, create_env_fn=create_hex_env),
+    #     ActionMask()
+    # )
+    # evaluate_env = TransformedEnv(
+    #     create_hex_env(),
+    #     ActionMask()
+    # )
+    environment = TransformedEnv(
         create_hex_env(),
         ActionMask()
     )
+    # set_exploration_type(ExplorationType.RANDOM)
 
-    # 2. Create models
+    # 2. Create models, wrapper, and policy
     model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
+    model_wrapper = ModelWrapper(model, temperature=INITIAL_TEMPERATURE)
     init_params(model)
-
-    # 3. Create wrappers and policy
     network = TensorDictModule(
-        ModelWrapper(model),
+        model_wrapper,
         in_keys=["observation", "action_mask"],
         out_keys=["logits", "mask"]
     )
     actor = ProbabilisticActor(
         network,
         in_keys=["logits", "mask"],
-        spec=serial_env.action_spec,
+        spec=environment.action_spec,
         distribution_class=MaskedCategorical
     )
 
-    # 4. Create loss function
+    # 3. Create loss function, optimizer
     loss_fn = SimpleLoss()
-
-    # 5. Create optimizer
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
-    # 6. Create replay buffer
-    replay_buffer = ReplayBuffer(
-        storage=LazyTensorStorage(BUFFER_SIZE, device=STORAGE_DEVICE),
-        sampler=SamplerWithoutReplacement(),
-        batch_size=BATCH_SIZE
+    # 4. Create data collector
+    collector = HexDataCollector(
+        environment,
+        actor,
+        device=DEVICE,
+        storage_device=STORAGE_DEVICE
     )
 
-    # 7. Training loop
-    random_policy = MaskedRandomPolicy(serial_env.action_spec)
-    mcts_policy = MCTSPolicy(evaluate_env, itermax=MCTS_ITERMAX)
+    # 5. Create evaluated policy
+    random_policy = MaskedRandomPolicy(environment.action_spec)
+    mcts_policy = MCTSPolicy(environment, itermax=MCTS_ITERMAX)
 
-    training_history, best_win_rate = training_loop(
-        collector, replay_buffer, loss_fn, optimizer, updater,
-        actor, qvalue_network, serial_env, evaluate_env, total_frames_collected,
-        random_policy, mcts_policy
+    # 6. Start training
+    training_history = training_loop(
+        environment,
+        actor,
+        network,
+        loss_fn,
+        optimizer,
+        collector,
+        random_policy
     )
 
     # 9. Plot results
     plot_training_curves(training_history)
 
     # 10. Final evaluation
-    final_evaluation(actor, mcts_policy, device_0=DEVICE, device_1=STORAGE_DEVICE, env=evaluate_env, best_win_rate=best_win_rate)
+    final_evaluation(environment, actor_1=actor, actor_2=mcts_policy, device_0=DEVICE, device_1=STORAGE_DEVICE)
 
 
 if __name__ == "__main__":

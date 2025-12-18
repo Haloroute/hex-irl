@@ -20,8 +20,8 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 # ---------------------------------
 # ENVIRONMENT CONFIGURATION
 # ---------------------------------
-BOARD_SIZE = 5  # Size of the Hex board (board_size x board_size)
-MAX_BOARD_SIZE = 5  # Maximum board size for padding
+BOARD_SIZE = 2  # Size of the Hex board (board_size x board_size)
+MAX_BOARD_SIZE = 2  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
 N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Board)
 
@@ -29,11 +29,11 @@ N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Boar
 # MODEL ARCHITECTURE
 # ---------------------------------
 MODEL_PARAMS = {
-    "conv_layers": [(64, 3)],  # List of (out_channels, kernel_size) tuples
-    "n_encoder_layers": 1,  # Number of transformer encoder layers
+    "conv_layers": [(32, 3), (64, 3), (128, 3), (256, 3)],  # List of (out_channels, kernel_size) tuples
+    "n_encoder_layers": 4,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
-    "d_ff": 512,  # Feedforward network dimension
+    "d_ff": 1024,  # Feedforward network dimension
     "dropout": 0.001,  # Dropout rate
     "output_flatten": True,  # Must be True for RL agents
 }
@@ -42,13 +42,24 @@ MODEL_PARAMS = {
 # DATA COLLECTION
 # ---------------------------------
 BUFFER_SIZE = 100_000  # Maximum size of replay buffer
-N_FRAMES_PER_BATCH = 100  # Number of frames to collect per batch
+MAX_N_STEPS = BOARD_SIZE ** 2  # Number of max steps per episode
+N_EPISODES_PER_EPOCH = int(1_000 / MAX_N_STEPS) + 1  # Episodes collected per epoch
+N_MEMMAP_CHUNKS = 5  # Number of memmap chunks to load for dataset
+
+# --------------------------------
+# TEMPERATURE SETTINGS
+# ---------------------------------
+INITIAL_TEMPERATURE = 1  # Initial temperature for action selection
+FINAL_TEMPERATURE = 0.1  # Final temperature after decay
+DECAY_RATE = 0.95  # Decay rate per epoch
 
 # ---------------------------------
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
+# Optimization Settings
+N_EPOCHS = 100  # Number of epochs per training iteration
 BATCH_SIZE = 256  # Batch size for training
-LR = 1e-3  # Learning rate (Adam/AdamW)
+LR = 5e-3  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 
 # Training Loop Configuration

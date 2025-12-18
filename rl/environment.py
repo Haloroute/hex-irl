@@ -154,6 +154,7 @@ class HexEnv(EnvBase):
         self.action_spec = Categorical(
             n=self.max_board_size ** 2,
             # Number of discrete actions for each side of the board
+            # shape=(1,),
             device=self.device,
             dtype=torch.long
         )
@@ -183,7 +184,7 @@ class HexEnv(EnvBase):
         terminated: Tensor = torch.tensor([False], dtype=torch.bool, device=self.device) # Game not done
 
         # Create fresh observation, mask, done, reward
-        fresh_action: Tensor = torch.tensor([0], dtype=torch.long, device=self.device) # Placeholder action
+        # fresh_action: Tensor = torch.tensor(0, dtype=torch.long, device=self.device) # Placeholder action
         fresh_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float32, device=self.device) # (max_board_size, max_board_size, n_channel)
         fresh_observation[..., 0] = (board == 0).float() # Red pieces channel
         fresh_observation[..., 1] = (board == 1).float() # Blue pieces channel
@@ -195,7 +196,7 @@ class HexEnv(EnvBase):
         fresh_terminated: Tensor = terminated # Not done
 
         fresh_tensordict: TensorDict = TensorDict({
-            "action": fresh_action,
+            # "action": fresh_action,
             "observation": fresh_observation,
             "action_mask": fresh_action_mask,
             "done": fresh_done,

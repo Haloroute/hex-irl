@@ -1,3 +1,5 @@
+import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -25,6 +27,7 @@ class HexModel(nn.Module):
             dropout: Dropout rate.
         """
         super(HexModel, self).__init__()
+        self.device = torch.device('cpu')
         self.output_flatten = output_flatten
         self.d_encoder: int = conv_layers[-1][0] # Last conv layer's out_channels as d_model
         self.conv = nn.Sequential(*[
@@ -90,6 +93,12 @@ class HexModel(nn.Module):
         # 3. Projection to create outputs for Actor/Critic
         x = self.projection(x) # (N, H*W, 1)
         if self.output_flatten:
-            return x.view(batch_size, -1) # (N, H*W)
+            return x.reshape(batch_size, -1) # (N, H*W)
         else:
-            return x.view(batch_size, height, width) # (N, H, W)
+            return x.reshape(batch_size, height, width) # (N, H, W)
+        
+    def to(self, device: torch.device | str) -> 'HexModel':
+        """Chuyển model và các submodule sang device chỉ định."""
+        super().to(device)
+        self.device = device
+        return self
