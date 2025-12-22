@@ -43,8 +43,8 @@ MODEL_PARAMS = {
 # ---------------------------------
 BUFFER_SIZE = 100_000  # Maximum size of replay buffer
 MAX_N_STEPS = BOARD_SIZE ** 2  # Number of max steps per episode
-N_EPISODES_PER_EPOCH = int(1_000 / MAX_N_STEPS) + 1  # Episodes collected per epoch
-N_MEMMAP_CHUNKS = 5  # Number of memmap chunks to load for dataset
+N_EPISODES_PER_EPOCH = int(10_000 / MAX_N_STEPS) + 1  # Episodes collected per epoch
+N_MEMMAP_CHUNKS = 10  # Number of memmap chunks to load for dataset
 
 # --------------------------------
 # TEMPERATURE SETTINGS
@@ -57,7 +57,7 @@ DECAY_RATE = 0.95  # Decay rate per epoch
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
 # Optimization Settings
-N_EPOCHS = 100  # Number of epochs per training iteration
+N_EPOCHS = 1000  # Number of epochs per training iteration
 BATCH_SIZE = 256  # Batch size for training
 LR = 1e-4  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer

@@ -85,6 +85,39 @@ from rl.config import (
 #     print("=" * 60)
 
 
+def load_latest_checkpoint(board_size: int, network: TensorDictModule, optimizer: optim.Optimizer):
+    """Load the latest checkpoint for the given board size if available."""
+    checkpoint_dir = Path(CHECKPOINT_DIR)
+    if not checkpoint_dir.exists():
+        return None, None
+    pattern = f"hex_{board_size}x{board_size}_e*.pth"
+    checkpoints = list(checkpoint_dir.glob(pattern))
+    if not checkpoints:
+        return None, None
+
+    def _epoch_from_path(path: Path) -> int:
+        try:
+            return int(path.stem.split("_e")[-1])
+        except (IndexError, ValueError):
+            return -1
+
+    latest_path = max(checkpoints, key=_epoch_from_path)
+    checkpoint = torch.load(latest_path, map_location=DEVICE)
+    try:
+        network.load_state_dict(checkpoint["state_dict"])
+        print(f"✓ Loaded model state: {latest_path.name}")
+    except Exception as e:
+        print(f"⚠️  Failed to load model state: {latest_path.name} | Error: {e}")
+
+    try:
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        print(f"✓ Loaded optimizer state: {latest_path.name}")
+    except Exception as e:
+        print(f"⚠️  Failed to load optimizer state: {latest_path.name} | Error: {e}")
+    return checkpoint, latest_path
+
+
 def training_loop(
     environment: EnvBase,
     actor: ProbabilisticActor,
@@ -92,7 +125,9 @@ def training_loop(
     loss_fn: nn.Module,
     optimizer: optim.Optimizer,
     collector: HexDataCollector,
-    random_policy: MaskedRandomPolicy
+    random_policy: MaskedRandomPolicy,
+    start_epoch: int = 0,
+    training_history: dict = None
 ):
     """Main training loop."""
     print("=" * 60)
@@ -100,27 +135,31 @@ def training_loop(
     print("=" * 60)
     
     # Training metrics
-    n_total_frames = 0
-    training_history = {
-        'epoch': [],
-        'loss': [],
-        'win_rate': {
-            'random': [],
-            'past': []
-        },
-        'frames': []
-    }
+    if training_history is None:
+        training_history = {
+            'epoch': [],
+            'loss': {
+                'train': [],
+                'val': []
+            },
+            'win_rate': {
+                'random': [],
+                'past': []
+            },
+            'frames': []
+        }
+    n_total_frames = training_history['frames'][-1] if training_history['frames'] else 0
     
     # Create checkpoint directory
     checkpoint_dir = Path(CHECKPOINT_DIR)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # START TRAINING LOOP
-    for epoch in range(N_EPOCHS):
+    for epoch in range(start_epoch, N_EPOCHS):
         print(f"{'='*20} Epoch {epoch+1}/{N_EPOCHS} {'='*20}")
 
         # Create lists to track losses
-        loss_list = []
+        train_loss_list = []
 
         # Create past actor for compare the performance with current actor
         past_actor = copy.deepcopy(actor)
@@ -190,7 +229,7 @@ def training_loop(
             optimizer.step()
             
             # Progress bar update
-            loss_list.append(loss.item())
+            train_loss_list.append(loss.item())
             iteration.set_postfix({
                 'Train Loss': loss.item()
             })
@@ -221,22 +260,23 @@ def training_loop(
                 val_iteration.set_postfix({
                     'Val Loss': loss.item()
                 })
-            avg_val_loss = sum(val_loss_list) / len(val_loss_list)
-            print(f"✓ Validation Loss: {avg_val_loss:.4f}")
 
         # Evaluation and logging
-        avg_loss = sum(loss_list) / len(loss_list)
+        avg_train_loss = sum(train_loss_list) / len(train_loss_list)
+        avg_val_loss = sum(val_loss_list) / len(val_loss_list)
         n_collected_frames = len(train_dataset)
         n_total_frames += n_collected_frames
         
         # Store metrics
         training_history['epoch'].append(epoch)
-        training_history['loss'].append(avg_loss)
+        training_history['loss']['train'].append(avg_train_loss)
+        training_history['loss']['val'].append(avg_val_loss)
         training_history['frames'].append(n_total_frames)
 
         print(f"{'='*60}")
         print(f"Epoch {epoch + 1} | Frames: {n_total_frames:,}")
-        print(f"Loss: {avg_loss:.4f}")
+        print(f"Train Loss: {avg_train_loss:.4f}")
+        print(f"Validation Loss: {avg_val_loss:.4f}")
         print(f"{'='*60}")
 
         # Evaluation against past policy
@@ -294,7 +334,8 @@ def plot_training_curves(training_history):
     fig, axes = plt.subplots(3, 2, figsize=(15, 10))
 
     # Loss
-    axes[0, 0].plot(training_history['epoch'], training_history['loss'])
+    axes[0, 0].plot(training_history['epoch'], training_history['loss']['train'], label='Train Loss', marker='o')
+    axes[0, 0].plot(training_history['epoch'], training_history['loss']['val'], label='Validation Loss', marker='o')
     axes[0, 0].set_title('Loss')
     axes[0, 0].set_xlabel('epoch')
     axes[0, 0].set_ylabel('Loss')
@@ -394,8 +435,17 @@ def main():
     )
 
     # 3. Create loss function, optimizer
-    loss_fn = SimpleLoss()
+    loss_fn = SimpleLoss(ratio=0.1)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+
+    # Load latest checkpoint if available
+    checkpoint, checkpoint_path = load_latest_checkpoint(BOARD_SIZE, network, optimizer)
+    start_epoch = 0
+    training_history = None
+    if checkpoint:
+        start_epoch = checkpoint.get('epoch', -1) + 1
+        training_history = checkpoint.get('training_history')
+        print(f"Resuming from checkpoint {checkpoint_path.name} at epoch {start_epoch}")
 
     # 4. Create data collector
     shutil.rmtree("data", ignore_errors=True)  # Clear previous data
@@ -419,7 +469,9 @@ def main():
         loss_fn,
         optimizer,
         collector,
-        random_policy
+        random_policy,
+        start_epoch=start_epoch,
+        training_history=training_history
     )
 
     # 9. Plot results
