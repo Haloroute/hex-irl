@@ -20,7 +20,7 @@ from torchrl.modules import ProbabilisticActor, MaskedCategorical
 # Import custom modules
 from rl.environment import HexEnv
 from rl.model.network import HexModel
-from rl.policy.wrapper import ActorWrapper
+from rl.policy.wrapper import ModelWrapper
 from rl.ui import UI
 from rl.config import (
     DEVICE, STORAGE_DEVICE, BOARD_SIZE,
@@ -72,16 +72,15 @@ class HexGamePlayer:
         print("=" * 60)
         
         # Create actor model
-        actor_model = HexModel(**MODEL_PARAMS).eval().to(DEVICE)
-        
-        actor_network = TensorDictModule(
-            ActorWrapper(actor_model),
+        model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
+        model_wrapper = ModelWrapper(model, temperature=0)
+        network = TensorDictModule(
+            model_wrapper,
             in_keys=["observation", "action_mask"],
             out_keys=["logits", "mask"]
         )
-        
         actor = ProbabilisticActor(
-            actor_network,
+            network,
             in_keys=["logits", "mask"],
             spec=self.env.action_spec,
             distribution_class=MaskedCategorical
@@ -89,11 +88,11 @@ class HexGamePlayer:
         
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-        actor.module[0].model.load_state_dict(checkpoint['actor_state_dict'])
+        network.load_state_dict(checkpoint['state_dict'])
         
         print(f"✓ Model loaded from: {checkpoint_path}")
         print(f"  Win Rate: {checkpoint['win_rate']:.1%}")
-        print(f"  Iteration: {checkpoint['iteration']}")
+        print(f"  Epoch: {checkpoint['epoch']}")
         print("=" * 60)
         
         return actor
@@ -152,7 +151,7 @@ class HexGamePlayer:
     def _ai_turn(self):
         """Handle AI player's turn."""
         # Get AI action
-        with torch.no_grad():
+        with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
             action_tensordict = self.actor(self.current_tensordict.to(DEVICE))
             action = action_tensordict['action'].item()
 
@@ -209,7 +208,6 @@ class HexGamePlayer:
     def play(self):
         """Main game loop."""
         self.reset_game()
-        set_exploration_type(ExplorationType.DETERMINISTIC)
         running = True
         while running:
             # Update UI from observation

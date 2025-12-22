@@ -73,17 +73,21 @@ class HexModel(nn.Module):
         elif len(x.shape) != 4:
             raise ValueError(f"Input tensor x must have shape (N, H, W, C) or (H, W, C), but got {x.shape}.")
 
+        # 0. Get padding mask
+        mask = (x[..., 2] == 0)  # (N, H, W)  # Giả sử kênh 2 là kênh board hợp lệ
+        flatten_mask = mask.flatten(1)  # (N, H*W)
+
         # 1. Convolutional layers
         batch_size, height, width = x.size(0), x.size(1), x.size(2)
         x = x.permute(0, 3, 1, 2).contiguous() # (N, C, H, W)
         x = self.conv(x) # (N, d_encoder, H, W)
 
         # 2. Positional Embedding + Transformer Encoder
-        # x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous()
-        x = x.permute(0, 2, 3, 1).contiguous()
-        pe: Tensor = self.positional_embedding(x)
-        x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
-        x = self.encoder(x) # (N, H*W, d_encoder)
+        x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
+        # x = x.permute(0, 2, 3, 1).contiguous() # (N, H, W, d_encoder)
+        # pe: Tensor = self.positional_embedding(x)
+        # x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
+        # x = self.encoder(x, src_key_padding_mask=flatten_mask) # (N, H*W, d_encoder)
 
         # Chỉ sử dụng khi sử dụng vmap của DiscreteSACLOss (deactivate_vmap=False)
         # Nếu không dùng vmap thì không cần thiết (do giảm hiệu suất).

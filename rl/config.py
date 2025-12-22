@@ -20,8 +20,8 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 # ---------------------------------
 # ENVIRONMENT CONFIGURATION
 # ---------------------------------
-BOARD_SIZE = 2  # Size of the Hex board (board_size x board_size)
-MAX_BOARD_SIZE = 2  # Maximum board size for padding
+BOARD_SIZE = 5  # Size of the Hex board (board_size x board_size)
+MAX_BOARD_SIZE = 5  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
 N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Board)
 
@@ -59,12 +59,12 @@ DECAY_RATE = 0.95  # Decay rate per epoch
 # Optimization Settings
 N_EPOCHS = 100  # Number of epochs per training iteration
 BATCH_SIZE = 256  # Batch size for training
-LR = 5e-3  # Learning rate (Adam/AdamW)
+LR = 1e-4  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 
 # Training Loop Configuration
-TOTAL_FRAMES = 100_000  # Total training frames
-WARMUP_FRAMES = 5_000  # Random exploration frames before training starts
+TOTAL_FRAMES = 1_000_000  # Total training frames
+WARMUP_FRAMES = 10_000  # Random exploration frames before training starts
 OPTIMIZATION_STEPS = 10  # UTD Ratio: gradient updates per data collection
 GAMMA = 0.99  # Discount factor for future rewards
 TAU = 0.005  # Soft update coefficient for target network (Polyak averaging)

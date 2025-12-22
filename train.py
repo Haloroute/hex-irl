@@ -6,7 +6,7 @@ This script trains an agent to play Hex using:
 - Discrete SAC with Negamax adjustment for zero-sum games
 """
 
-import copy, math, torch
+import copy, math, os, shutil, torch
 
 import torch.nn as nn
 import torch.optim as optim
@@ -95,7 +95,7 @@ def training_loop(
     random_policy: MaskedRandomPolicy
 ):
     """Main training loop."""
-    print("\n" + "=" * 60)
+    print("=" * 60)
     print("MAIN TRAINING LOOP")
     print("=" * 60)
     
@@ -117,7 +117,7 @@ def training_loop(
 
     # START TRAINING LOOP
     for epoch in range(N_EPOCHS):
-        print(f"\n{'='*20} Epoch {epoch+1}/{N_EPOCHS} {'='*20}\n")
+        print(f"{'='*20} Epoch {epoch+1}/{N_EPOCHS} {'='*20}")
 
         # Create lists to track losses
         loss_list = []
@@ -222,7 +222,7 @@ def training_loop(
                     'Val Loss': loss.item()
                 })
             avg_val_loss = sum(val_loss_list) / len(val_loss_list)
-            print(f"\n✓ Validation Loss: {avg_val_loss:.4f}")
+            print(f"✓ Validation Loss: {avg_val_loss:.4f}")
 
         # Evaluation and logging
         avg_loss = sum(loss_list) / len(loss_list)
@@ -234,7 +234,7 @@ def training_loop(
         training_history['loss'].append(avg_loss)
         training_history['frames'].append(n_total_frames)
 
-        print(f"\n{'='*60}")
+        print(f"{'='*60}")
         print(f"Epoch {epoch + 1} | Frames: {n_total_frames:,}")
         print(f"Loss: {avg_loss:.4f}")
         print(f"{'='*60}")
@@ -300,23 +300,23 @@ def plot_training_curves(training_history):
     axes[0, 0].set_ylabel('Loss')
     axes[0, 0].grid(True)
 
-    # Win Rate with Past Policy
-    axes[2, 0].plot(training_history['epoch'], training_history['win_rate']['past'], marker='o')
-    axes[2, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[2, 0].set_title('Win Rate vs Past Policy')
-    axes[2, 0].set_xlabel('Epoch')
-    axes[2, 0].set_ylabel('Win Rate')
-    axes[2, 0].legend()
-    axes[2, 0].grid(True)
-
     # Win Rate with Random Policy
-    axes[1, 1].plot(training_history['epoch'], training_history['win_rate']['random'], marker='o')
-    axes[1, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[1, 1].set_title('Win Rate vs Random Policy')
-    axes[1, 1].set_xlabel('Epoch')
-    axes[1, 1].set_ylabel('Win Rate')
-    axes[1, 1].legend()
-    axes[1, 1].grid(True)
+    axes[0, 1].plot(training_history['epoch'], training_history['win_rate']['random'], marker='o')
+    axes[0, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[0, 1].set_title('Win Rate vs Random Policy')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Win Rate')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True)
+
+    # Win Rate with Past Policy
+    axes[1, 0].plot(training_history['epoch'], training_history['win_rate']['past'], marker='o')
+    axes[1, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[1, 0].set_title('Win Rate vs Past Policy')
+    axes[1, 0].set_xlabel('Epoch')
+    axes[1, 0].set_ylabel('Win Rate')
+    axes[1, 0].legend()
+    axes[1, 0].grid(True)
 
     plt.tight_layout()
     plot_path = results_dir / f"training_curves_{BOARD_SIZE}x{BOARD_SIZE}.png"
@@ -359,8 +359,9 @@ def main():
 
     # 1. Create environment
     create_hex_env = lambda: HexEnv(
-        board_size=BOARD_SIZE, 
-        max_board_size=MAX_BOARD_SIZE, 
+        board_size=BOARD_SIZE,
+        max_board_size=MAX_BOARD_SIZE,
+        swap_rule=SWAP_RULE,
         device=STORAGE_DEVICE
     )
     # serial_env = TransformedEnv(
@@ -375,7 +376,6 @@ def main():
         create_hex_env(),
         ActionMask()
     )
-    # set_exploration_type(ExplorationType.RANDOM)
 
     # 2. Create models, wrapper, and policy
     model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
@@ -398,6 +398,8 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     # 4. Create data collector
+    shutil.rmtree("data", ignore_errors=True)  # Clear previous data
+    os.makedirs("data", exist_ok=True)
     collector = HexDataCollector(
         environment,
         actor,
