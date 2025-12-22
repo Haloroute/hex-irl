@@ -29,6 +29,7 @@ class HexModel(nn.Module):
         super(HexModel, self).__init__()
         self.device = torch.device('cpu')
         self.output_flatten = output_flatten
+        self.use_attention = n_encoder_layers > 0
         self.d_encoder: int = conv_layers[-1][0] # Last conv layer's out_channels as d_model
         self.conv = nn.Sequential(*[
             SkipConnection(
@@ -47,18 +48,19 @@ class HexModel(nn.Module):
             )
             for i in range(len(conv_layers))
         ])
-        self.positional_embedding = TriAxialPositionalEmbedding(self.d_encoder)
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=self.d_encoder,
-                nhead=n_heads,
-                dim_feedforward=d_ff,
-                dropout=dropout,
-                activation='gelu',
-                batch_first=True
-            ),
-            num_layers=n_encoder_layers
-        )
+        if self.use_attention:
+            self.positional_embedding = TriAxialPositionalEmbedding(self.d_encoder)
+            self.encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=self.d_encoder,
+                    nhead=n_heads,
+                    dim_feedforward=d_ff,
+                    dropout=dropout,
+                    activation='gelu',
+                    batch_first=True
+                ),
+                num_layers=n_encoder_layers
+            )
         self.projection = nn.Linear(self.d_encoder, 1) # Đầu ra cho Actor (logits)/Critic (Q-value)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -83,11 +85,13 @@ class HexModel(nn.Module):
         x = self.conv(x) # (N, d_encoder, H, W)
 
         # 2. Positional Embedding + Transformer Encoder
-        x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
-        # x = x.permute(0, 2, 3, 1).contiguous() # (N, H, W, d_encoder)
-        # pe: Tensor = self.positional_embedding(x)
-        # x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
-        # x = self.encoder(x, src_key_padding_mask=flatten_mask) # (N, H*W, d_encoder)
+        if self.use_attention:
+            x = x.permute(0, 2, 3, 1).contiguous() # (N, H, W, d_encoder)
+            pe: Tensor = self.positional_embedding(x)
+            x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
+            x = self.encoder(x, src_key_padding_mask=flatten_mask) # (N, H*W, d_encoder)
+        else:
+            x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
 
         # Chỉ sử dụng khi sử dụng vmap của DiscreteSACLOss (deactivate_vmap=False)
         # Nếu không dùng vmap thì không cần thiết (do giảm hiệu suất).

@@ -177,9 +177,9 @@ class HexGamePlayer:
     def _show_game_result(self, winner: int):
         """Display game result."""
         print("\n" + "=" * 60)
-        if self.human_first and winner == 1 or not self.human_first and winner == 0:
+        if self.human_first and winner == 0 or not self.human_first and winner == 1:
             print(f"🎉 HUMAN WINS! ({'Red' if self.human_first else 'Blue'})")
-        elif self.human_first and winner == 0 or not self.human_first and winner == 1:
+        elif self.human_first and winner == 1 or not self.human_first and winner == 0:
             print(f"🤖 AI WINS! ({'Blue' if self.human_first else 'Red'})")
         else:
             print("DRAW!")

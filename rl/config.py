@@ -30,7 +30,7 @@ N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Boar
 # ---------------------------------
 MODEL_PARAMS = {
     "conv_layers": [(32, 3), (64, 3), (128, 3), (256, 3)],  # List of (out_channels, kernel_size) tuples
-    "n_encoder_layers": 4,  # Number of transformer encoder layers
+    "n_encoder_layers": 0,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
     "d_ff": 1024,  # Feedforward network dimension
