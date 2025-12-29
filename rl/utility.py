@@ -221,11 +221,11 @@ def evaluate_agent(
         - games_as_p1: Games played as Player 1
         - total_wins: Total wins
         - total_games: Total games
-    """    
+    """
     wins_as_p0 = wins_as_p1 = 0
     games_as_p0 = games_as_p1 = n_games
 
-    with torch.no_grad(), set_exploration_type(ExplorationType.RANDOM):
+    with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
         # Play as Player 0 (Red)
         for _ in tqdm(range(games_as_p0), desc="Evaluating as P0", leave=False):
             tensordict = env.reset()

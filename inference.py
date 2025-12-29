@@ -255,20 +255,31 @@ def main():
     print("HEX GAME - HUMAN VS AI")
     print("=" * 60)
     
-    # Find best checkpoint
     checkpoint_dir = Path(CHECKPOINT_DIR)
-    checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_best.pth"
-    
-    if not checkpoint_path.exists():
-        print(f"❌ Checkpoint not found: {checkpoint_path}")
+    pattern = f"hex_{BOARD_SIZE}x{BOARD_SIZE}_*.pth"
+    best_path, best_epoch = None, -1
+    for path in checkpoint_dir.glob(pattern):
+        try:
+            data = torch.load(path, map_location="cpu")
+            epoch = data.get("epoch", -1)
+            if epoch > best_epoch:
+                best_epoch, best_path = epoch, path
+        except Exception:
+            continue
+
+    if not best_path:
+        print(f"❌ No checkpoints found in: {checkpoint_dir}")
         print("Please train a model first using train.py")
         return
-    
+
+    print(f"Using checkpoint with highest epoch ({best_epoch}): {best_path}")
+
     # Create game player
+    human_first = input("Is the human player going first? (y/n): ").strip().lower() != 'n'
     game = HexGamePlayer(
-        checkpoint_path=str(checkpoint_path),
+        checkpoint_path=str(best_path),
         board_size=BOARD_SIZE,
-        human_first=True
+        human_first=human_first
     )
     
     # Start playing

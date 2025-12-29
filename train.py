@@ -13,6 +13,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from pathlib import Path
+from pyinstrument import Profiler
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torch import Tensor
@@ -44,7 +45,7 @@ from rl.utility import (
 from rl.config import (
     DEVICE, STORAGE_DEVICE,
     BOARD_SIZE, MAX_BOARD_SIZE, SWAP_RULE, N_CHANNEL,
-    MODEL_PARAMS, BUFFER_SIZE, MAX_N_STEPS, N_EPISODES_PER_EPOCH, N_MEMMAP_CHUNKS,
+    MODEL_PARAMS, BUFFER_SIZE, MAX_N_STEPS, N_SAMPLES_PER_EPOCH, N_EPISODES_PER_EPOCH, N_TRAINING_ROUNDS_PER_EPOCH, N_MEMMAP_CHUNKS,
     INITIAL_TEMPERATURE, FINAL_TEMPERATURE, DECAY_RATE,
     N_EPOCHS, BATCH_SIZE, LR, WEIGHT_DECAY,
     TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
@@ -177,7 +178,11 @@ def training_loop(
             print(f"✓ Set temperature to {new_temperature:.4f}")
 
         # Create training data
+        # profiler = Profiler()
+        # profiler.start()
         collector.collect_and_save(N_EPISODES_PER_EPOCH, save_dir="data", filename=f"epoch_{epoch+1}_data")
+        # profiler.stop()
+        # profiler.open_in_browser()
 
         # Create dataset and dataloader
         train_dataset = HexRolloutDataset(
@@ -199,41 +204,42 @@ def training_loop(
         actor.train()
 
         # Training over the train dataset
-        for batch_data in (iteration := tqdm(train_loader, desc="Training Batches", leave=False)):
-            # Data preparation
-            batch_data: TensorDict = batch_data.to(DEVICE)
-            observation, action, action_mask, reward = (
-                batch_data.get('observation').to(DEVICE),
-                batch_data.get('action').to(DEVICE),
-                batch_data.get('action_mask').to(DEVICE),
-                batch_data.get('reward').to(DEVICE)
-            )
-            
-            # Compute loss
-            input_data: TensorDict = TensorDict({
-                'observation': observation,
-                'action_mask': action_mask
-            })
-            logits: Tensor = network(input_data).get('logits')
-            loss: Tensor = loss_fn(logits, action, reward)
+        for round in range(N_TRAINING_ROUNDS_PER_EPOCH):
+            for batch_data in (iteration := tqdm(train_loader, desc=f"Training Round {round+1}/{N_TRAINING_ROUNDS_PER_EPOCH}", leave=False)):
+                # Data preparation
+                batch_data: TensorDict = batch_data.to(DEVICE)
+                observation, action, action_mask, reward = (
+                    batch_data.get('observation').to(DEVICE),
+                    batch_data.get('action').to(DEVICE),
+                    batch_data.get('action_mask').to(DEVICE),
+                    batch_data.get('reward').to(DEVICE)
+                )
+                
+                # Compute loss
+                input_data: TensorDict = TensorDict({
+                    'observation': observation,
+                    'action_mask': action_mask
+                })
+                logits: Tensor = network(input_data).get('logits')
+                loss: Tensor = loss_fn(logits, action, reward)
 
-            # Gradient descent
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(
-                list(actor.parameters()),
-                max_norm=GRAD_CLIP_NORM
-            )            
-            optimizer.step()
-            
-            # Progress bar update
-            train_loss_list.append(loss.item())
-            iteration.set_postfix({
-                'Train Loss': loss.item()
-            })
-        
+                # Gradient descent
+                optimizer.zero_grad()
+                loss.backward()
+                
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(
+                    list(actor.parameters()),
+                    max_norm=GRAD_CLIP_NORM
+                )            
+                optimizer.step()
+                
+                # Progress bar update
+                train_loss_list.append(loss.item())
+                iteration.set_postfix({
+                    'Train Loss': loss.item()
+                })
+
         # Evaluation over the validation dataset
         actor.eval()
         with torch.no_grad():
@@ -279,19 +285,19 @@ def training_loop(
         print(f"Validation Loss: {avg_val_loss:.4f}")
         print(f"{'='*60}")
 
-        # Evaluation against past policy
-        eval_results = evaluate_agent(
-            actor, past_actor,
-            device_0=DEVICE, device_1=STORAGE_DEVICE,
-            env=environment, n_games=EVAL_GAMES
-        )
-        win_rate = eval_results['win_rate']
-        training_history['win_rate']['past'].append(win_rate)
+        # # Evaluation against past policy
+        # eval_results = evaluate_agent(
+        #     actor, past_actor,
+        #     device_0=DEVICE, device_1=STORAGE_DEVICE,
+        #     env=environment, n_games=EVAL_GAMES
+        # )
+        # win_rate = eval_results['win_rate']
+        # training_history['win_rate']['past'].append(win_rate)
         
-        print("Evaluation against Past Itself:")
-        print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
-        print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
-        print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
+        # print("Evaluation against Past Itself:")
+        # print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+        # print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+        # print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
         # Evaluate against random policy
         eval_results = evaluate_agent(
@@ -320,6 +326,9 @@ def training_loop(
         print(f"✓ Checkpoint Saved! (WinRate: {win_rate:.1%})")
         print(f"{'='*60}\n")
 
+        # NEW: export plots after each epoch
+        plot_training_curves(training_history)
+
     print("\n" + "=" * 60)
     print("TRAINING COMPLETED")
     print("=" * 60)
@@ -331,33 +340,33 @@ def plot_training_curves(training_history):
     """Plot and save training curves."""
     results_dir = Path(RESULTS_DIR)
     results_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(3, 2, figsize=(15, 10))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 10))
 
     # Loss
-    axes[0, 0].plot(training_history['epoch'], training_history['loss']['train'], label='Train Loss', marker='o')
-    axes[0, 0].plot(training_history['epoch'], training_history['loss']['val'], label='Validation Loss', marker='o')
-    axes[0, 0].set_title('Loss')
-    axes[0, 0].set_xlabel('epoch')
-    axes[0, 0].set_ylabel('Loss')
-    axes[0, 0].grid(True)
+    axes[0].plot(training_history['epoch'], training_history['loss']['train'], label='Train Loss', marker='o')
+    axes[0].plot(training_history['epoch'], training_history['loss']['val'], label='Validation Loss', marker='o')
+    axes[0].set_title('Loss')
+    axes[0].set_xlabel('epoch')
+    axes[0].set_ylabel('Loss')
+    axes[0].grid(True)
 
     # Win Rate with Random Policy
-    axes[0, 1].plot(training_history['epoch'], training_history['win_rate']['random'], marker='o')
-    axes[0, 1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[0, 1].set_title('Win Rate vs Random Policy')
-    axes[0, 1].set_xlabel('Epoch')
-    axes[0, 1].set_ylabel('Win Rate')
-    axes[0, 1].legend()
-    axes[0, 1].grid(True)
+    axes[1].plot(training_history['epoch'], training_history['win_rate']['random'], marker='o')
+    axes[1].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    axes[1].set_title('Win Rate vs Random Policy')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylabel('Win Rate')
+    axes[1].legend()
+    axes[1].grid(True)
 
-    # Win Rate with Past Policy
-    axes[1, 0].plot(training_history['epoch'], training_history['win_rate']['past'], marker='o')
-    axes[1, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
-    axes[1, 0].set_title('Win Rate vs Past Policy')
-    axes[1, 0].set_xlabel('Epoch')
-    axes[1, 0].set_ylabel('Win Rate')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True)
+    # # Win Rate with Past Policy
+    # axes[1, 0].plot(training_history['epoch'], training_history['win_rate']['past'], marker='o')
+    # axes[1, 0].axhline(y=0.5, color='r', linestyle='--', label='Random Baseline')
+    # axes[1, 0].set_title('Win Rate vs Past Policy')
+    # axes[1, 0].set_xlabel('Epoch')
+    # axes[1, 0].set_ylabel('Win Rate')
+    # axes[1, 0].legend()
+    # axes[1, 0].grid(True)
 
     plt.tight_layout()
     plot_path = results_dir / f"training_curves_{BOARD_SIZE}x{BOARD_SIZE}.png"
@@ -453,6 +462,7 @@ def main():
     collector = HexDataCollector(
         environment,
         actor,
+        gamma=GAMMA,
         device=DEVICE,
         storage_device=STORAGE_DEVICE
     )

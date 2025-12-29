@@ -20,8 +20,8 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 # ---------------------------------
 # ENVIRONMENT CONFIGURATION
 # ---------------------------------
-BOARD_SIZE = 5  # Size of the Hex board (board_size x board_size)
-MAX_BOARD_SIZE = 5  # Maximum board size for padding
+BOARD_SIZE = 3  # Size of the Hex board (board_size x board_size)
+MAX_BOARD_SIZE = 3  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
 N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Board)
 
@@ -41,10 +41,12 @@ MODEL_PARAMS = {
 # ---------------------------------
 # DATA COLLECTION
 # ---------------------------------
-BUFFER_SIZE = 100_000  # Maximum size of replay buffer
+BUFFER_SIZE = 10_000  # Maximum size of replay buffer
 MAX_N_STEPS = BOARD_SIZE ** 2  # Number of max steps per episode
-N_EPISODES_PER_EPOCH = int(10_000 / MAX_N_STEPS) + 1  # Episodes collected per epoch
-N_MEMMAP_CHUNKS = 10  # Number of memmap chunks to load for dataset
+N_SAMPLES_PER_EPOCH = 1_000  # Number of samples collected per rollout
+N_EPISODES_PER_EPOCH = int(N_SAMPLES_PER_EPOCH / MAX_N_STEPS) + 1  # Episodes collected per epoch
+N_TRAINING_ROUNDS_PER_EPOCH = 10  # Number of training rounds per epoch
+N_MEMMAP_CHUNKS = int(BUFFER_SIZE / N_SAMPLES_PER_EPOCH) + 1  # Number of memmap chunks to load for dataset
 
 # --------------------------------
 # TEMPERATURE SETTINGS
@@ -57,16 +59,16 @@ DECAY_RATE = 0.95  # Decay rate per epoch
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
 # Optimization Settings
-N_EPOCHS = 1000  # Number of epochs per training iteration
-BATCH_SIZE = 256  # Batch size for training
-LR = 1e-4  # Learning rate (Adam/AdamW)
+N_EPOCHS = 100  # Number of epochs per training iteration
+BATCH_SIZE = 512  # Batch size for training
+LR = 1e-3  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 
 # Training Loop Configuration
 TOTAL_FRAMES = 1_000_000  # Total training frames
 WARMUP_FRAMES = 10_000  # Random exploration frames before training starts
 OPTIMIZATION_STEPS = 10  # UTD Ratio: gradient updates per data collection
-GAMMA = 0.99  # Discount factor for future rewards
+GAMMA = 0.95  # Discount factor for future rewards
 TAU = 0.005  # Soft update coefficient for target network (Polyak averaging)
 GRAD_CLIP_NORM = 1.0  # Maximum norm for gradient clipping
 

@@ -93,7 +93,7 @@ def main():
 
     # Model and actor
     model = HexModel(**MODEL_PARAMS).to(DEVICE)  # MODEL_PARAMS minimized
-    model_wrapper = ModelWrapper(model, temperature=INITIAL_TEMPERATURE)
+    model_wrapper = ModelWrapper(model, temperature=FINAL_TEMPERATURE)
     init_params(model)
     network = TensorDictModule(
         model_wrapper,

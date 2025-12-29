@@ -9,9 +9,9 @@ from typing import Literal
 
 
 class SimpleLoss(nn.Module):
-    def __init__(self, ratio: float = 0.7, reduction: Literal['none', 'mean', 'sum'] = 'mean'):
+    def __init__(self, ratio: float = 0.8, reduction: Literal['none', 'mean', 'sum'] = 'mean'):
         super().__init__()
-        self.ratio = ratio
+        self.ratio = 0
         self.reduction = reduction
 
     def forward(self, logits: Tensor, action: Tensor, reward: Tensor) -> Tensor:

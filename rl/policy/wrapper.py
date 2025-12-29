@@ -60,14 +60,25 @@ class ModelWrapper(nn.Module):
             logits[player_mask] = logits[player_mask].transpose(1, 2) # (N, W, H) -> (N, H, W)
 
         # 6. Flatten
-        if self.temperature > 1e-6:
-            logits = logits.reshape(N, -1) / (self.temperature + 1e-8) # (N, H*W)
-        else:
-            logits = logits.reshape(N, -1)  # (N, H*W)
-            max_indices = logits.argmax(dim=-1, keepdim=True)  # (N, 1)
-            max_mask = torch.zeros_like(logits, dtype=torch.bool)
-            max_mask.scatter_(-1, max_indices, True)
-            logits = torch.where(max_mask, logits, torch.zeros_like(logits))
+        logits = logits.reshape(N, -1)  # (N, H*W)
+        
+        # Apply temperature: với xác suất = temperature, cộng 1000 vào 1 logit ngẫu nhiên của 1 sample
+        if self.temperature > 1e-6 and torch.rand(1, device=logits.device).item() < self.temperature:
+            num_actions = logits.shape[1]
+            
+            # Chọn random 1 sample trong batch
+            sample_idx = torch.randint(0, N, (1,), device=logits.device).item()
+            
+            # Chọn random action cho sample đó
+            if action_mask is not None:
+                valid_mask = action_mask.view(N, -1)[sample_idx]  # (H*W,)
+                random_probs = torch.rand(num_actions, device=logits.device) * valid_mask.float()
+                action_idx = random_probs.argmax().item()
+            else:
+                action_idx = torch.randint(0, num_actions, (1,), device=logits.device).item()
+            
+            # Cộng 1000 vào logit được chọn
+            logits[sample_idx, action_idx] += 1000.0
 
         # 7. Xử lý action_mask
         if action_mask is not None:
