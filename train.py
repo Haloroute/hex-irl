@@ -32,9 +32,11 @@ from rl.dataloader import HexDataCollector, HexRolloutDataset
 from rl.environment import HexEnv
 from rl.loss import SimpleLoss
 from rl.model.network import HexModel
+from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
 from rl.policy.mcts import MCTSPolicy
 from rl.policy.random import MaskedRandomPolicy
 from rl.policy.wrapper import ModelWrapper
+from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.utility import (
     init_params,
     get_optimizer_params,
@@ -91,7 +93,7 @@ def load_latest_checkpoint(board_size: int, network: TensorDictModule, optimizer
     checkpoint_dir = Path(CHECKPOINT_DIR)
     if not checkpoint_dir.exists():
         return None, None
-    pattern = f"hex_{board_size}x{board_size}_e*.pth"
+    pattern = f"hex_{board_size}x{board_size}_e*.pt"
     checkpoints = list(checkpoint_dir.glob(pattern))
     if not checkpoints:
         return None, None
@@ -299,12 +301,17 @@ def training_loop(
         # print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
         # print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
+        # Set temperature to negative for evaluation (to disable random logit boost)
+        network.module.temperature *= -1
         # Evaluate against random policy
         eval_results = evaluate_agent(
             actor, random_policy,
             device_0=DEVICE, device_1=STORAGE_DEVICE,
             env=environment, n_games=EVAL_GAMES
         )
+        # Restore temperature back (multiply -1 again to get original)
+        network.module.temperature *= -1
+
         win_rate = eval_results['win_rate']
         training_history['win_rate']['random'].append(win_rate)
 
@@ -314,7 +321,7 @@ def training_loop(
         print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
         # Save checkpoint
-        checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_e{epoch}.pth"
+        checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_e{epoch}.pt"
         torch.save({
             'epoch': epoch,
             'state_dict': network.state_dict(),
@@ -428,8 +435,9 @@ def main():
     )
 
     # 2. Create models, wrapper, and policy
-    model = HexModel(**MODEL_PARAMS).train().to(DEVICE)
-    model_wrapper = ModelWrapper(model, temperature=INITIAL_TEMPERATURE)
+    base_model = Conv(**MODEL_PARAMS)
+    model = HexModelV2(base_model)
+    model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=INITIAL_TEMPERATURE).train().to(DEVICE)
     init_params(model)
     network = TensorDictModule(
         model_wrapper,
@@ -441,10 +449,10 @@ def main():
         in_keys=["logits", "mask"],
         spec=environment.action_spec,
         distribution_class=MaskedCategorical
-    )
+    ).train().to(DEVICE)
 
     # 3. Create loss function, optimizer
-    loss_fn = SimpleLoss(ratio=0.1)
+    loss_fn = SimpleLoss(ratio=0.3)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     # Load latest checkpoint if available

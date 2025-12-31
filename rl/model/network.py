@@ -16,7 +16,8 @@ class HexModel(nn.Module):
                  n_heads: int = 8,
                  d_ff: int = 2048,
                  dropout: float = 0.1,
-                 output_flatten: bool = True):
+                 output_flatten: bool = True,
+                 **kwargs):
         """Args:
             conv_layers: List of tuples (out_channels, kernel_size) for each conv layer.
                 Note that, in_channels is inferred from the previous layer's out_channels (d_input for the first layer).

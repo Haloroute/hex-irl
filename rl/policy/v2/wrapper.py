@@ -88,7 +88,7 @@ class ModelWrapper(nn.Module):
         logits = logits.reshape(N, -1)  # (N, H*W)
         
         # Apply temperature: với xác suất = temperature, cộng 1000 vào 1 logit ngẫu nhiên của 1 sample
-        if self.temperature > 1e-6 and torch.rand(1, device=logits.device).item() < self.temperature:
+        if not torch.rand(1, device=logits.device).item() >= self.temperature:
             num_actions = logits.shape[1]
             
             # Chọn random 1 sample trong batch

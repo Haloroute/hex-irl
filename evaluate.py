@@ -14,8 +14,11 @@ from torchrl.modules import ProbabilisticActor, MaskedCategorical
 
 from rl.environment import HexEnv
 from rl.model.network import HexModel
+from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
 from rl.policy.mcts import MCTSPolicy
+from rl.policy.random import MaskedRandomPolicy
 from rl.policy.wrapper import ModelWrapper
+from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.utility import evaluate_agent, init_params
 from rl.config import (
     DEVICE, STORAGE_DEVICE,
@@ -34,7 +37,7 @@ def load_latest_checkpoint(board_size: int, network: TensorDictModule):
     checkpoint_dir = Path(CHECKPOINT_DIR)
     if not checkpoint_dir.exists():
         return None, None
-    pattern = f"hex_{board_size}x{board_size}_e*.pth"
+    pattern = f"hex_{board_size}x{board_size}_e*.pt"
     checkpoints = list(checkpoint_dir.glob(pattern))
     if not checkpoints:
         return None, None
@@ -92,8 +95,9 @@ def main():
     )
 
     # Model and actor
-    model = HexModel(**MODEL_PARAMS).to(DEVICE)  # MODEL_PARAMS minimized
-    model_wrapper = ModelWrapper(model, temperature=FINAL_TEMPERATURE)
+    base_model = Conv(**MODEL_PARAMS)
+    model = HexModelV2(base_model)
+    model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
     init_params(model)
     network = TensorDictModule(
         model_wrapper,
@@ -121,7 +125,8 @@ def main():
     except Exception:
         print(f"⚠️ Giá trị không hợp lệ, dùng mặc định {default_rollouts}")
         mcts_rollouts = default_rollouts
-    mcts_policy = MCTSPolicy(environment, itermax=mcts_rollouts)
+    # mcts_policy = MCTSPolicy(environment, itermax=mcts_rollouts)
+    mcts_policy = MaskedRandomPolicy(environment.action_spec)
     print(f"✓ Sử dụng MCTS rollout: {mcts_rollouts}")
 
     # Final evaluation

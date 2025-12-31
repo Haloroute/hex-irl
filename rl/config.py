@@ -20,16 +20,17 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 # ---------------------------------
 # ENVIRONMENT CONFIGURATION
 # ---------------------------------
-BOARD_SIZE = 3  # Size of the Hex board (board_size x board_size)
-MAX_BOARD_SIZE = 3  # Maximum board size for padding
+BOARD_SIZE = 11  # Size of the Hex board (board_size x board_size)
+MAX_BOARD_SIZE = 11  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
-N_CHANNEL = 4  # Number of input channels (Red, Blue, Current Player, Valid Board)
+N_CHANNEL = 2  # Number of input channels (Red, Blue)
 
 # ---------------------------------
 # MODEL ARCHITECTURE
 # ---------------------------------
 MODEL_PARAMS = {
-    "conv_layers": [(32, 3), (64, 3), (128, 3), (256, 3)],  # List of (out_channels, kernel_size) tuples
+    "board_size": BOARD_SIZE,
+    "conv_layers": [(64, 3)] * 18,  # List of (out_channels, kernel_size) tuples
     "n_encoder_layers": 0,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
@@ -51,17 +52,17 @@ N_MEMMAP_CHUNKS = int(BUFFER_SIZE / N_SAMPLES_PER_EPOCH) + 1  # Number of memmap
 # --------------------------------
 # TEMPERATURE SETTINGS
 # ---------------------------------
-INITIAL_TEMPERATURE = 1  # Initial temperature for action selection
-FINAL_TEMPERATURE = 0.1  # Final temperature after decay
-DECAY_RATE = 0.95  # Decay rate per epoch
+INITIAL_TEMPERATURE = 1.0  # Initial temperature for action selection
+FINAL_TEMPERATURE = 0.01  # Final temperature after decay
+DECAY_RATE = 0.975  # Decay rate per epoch
 
 # ---------------------------------
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
 # Optimization Settings
 N_EPOCHS = 100  # Number of epochs per training iteration
-BATCH_SIZE = 512  # Batch size for training
-LR = 1e-3  # Learning rate (Adam/AdamW)
+BATCH_SIZE = 1  # Batch size for training
+LR = 1e-9  # Learning rate (Adam/AdamW)
 WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
 
 # Training Loop Configuration
@@ -77,7 +78,7 @@ LOG_INTERVAL = 10  # Log and evaluate every N iterations
 RANDOM_EVAL_INTERVAL = 100  # Evaluate using random policy every N iterations
 PAST_EVAL_INTERVAL = 200  # Evaluate against past actor every N iterations
 MCTS_EVAL_INTERVAL = 1000  # Evaluate using MCTS policy every N iterations
-EVAL_GAMES = 100  # Number of games for evaluation against random policy
+EVAL_GAMES = 10  # Number of games for evaluation against random policy
 MCTS_ITERMAX = 100  # MCTS iterations for evaluation
 
 # ---------------------------------
