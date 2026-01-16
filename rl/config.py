@@ -20,8 +20,8 @@ STORAGE_DEVICE = "cpu"  # Device for replay buffer storage
 # ---------------------------------
 # ENVIRONMENT CONFIGURATION
 # ---------------------------------
-BOARD_SIZE = 11  # Size of the Hex board (board_size x board_size)
-MAX_BOARD_SIZE = 11  # Maximum board size for padding
+BOARD_SIZE = 5  # Size of the Hex board (board_size x board_size)
+MAX_BOARD_SIZE = 5  # Maximum board size for padding
 SWAP_RULE = True  # Whether to enable swap rule in Hex game
 N_CHANNEL = 2  # Number of input channels (Red, Blue)
 
@@ -30,7 +30,7 @@ N_CHANNEL = 2  # Number of input channels (Red, Blue)
 # ---------------------------------
 MODEL_PARAMS = {
     "board_size": BOARD_SIZE,
-    "conv_layers": [(64, 3)] * 18,  # List of (out_channels, kernel_size) tuples
+    "conv_layers": [(128, 3)] * 12,  # List of (out_channels, kernel_size) tuples
     "n_encoder_layers": 0,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
@@ -60,10 +60,10 @@ DECAY_RATE = 0.975  # Decay rate per epoch
 # TRAINING HYPERPARAMETERS
 # ---------------------------------
 # Optimization Settings
-N_EPOCHS = 100  # Number of epochs per training iteration
-BATCH_SIZE = 1  # Batch size for training
-LR = 1e-9  # Learning rate (Adam/AdamW)
-WEIGHT_DECAY = 1e-4  # Weight decay for optimizer
+N_EPOCHS = 1000  # Number of epochs per training iteration
+BATCH_SIZE = 512  # Batch size for training
+LR = 5e-4  # Learning rate (Adam/AdamW)
+WEIGHT_DECAY = 1e-5  # Weight decay for optimizer
 
 # Training Loop Configuration
 TOTAL_FRAMES = 1_000_000  # Total training frames

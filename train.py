@@ -13,7 +13,7 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 
 from pathlib import Path
-from pyinstrument import Profiler
+# from pyinstrument import Profiler
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torch import Tensor
@@ -452,7 +452,7 @@ def main():
     ).train().to(DEVICE)
 
     # 3. Create loss function, optimizer
-    loss_fn = SimpleLoss(ratio=0.3)
+    loss_fn = SimpleLoss(ratio=0)
     optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
 
     # Load latest checkpoint if available

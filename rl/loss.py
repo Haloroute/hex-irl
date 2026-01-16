@@ -27,7 +27,12 @@ class SimpleLoss(nn.Module):
             Tensor: Giá trị loss trung bình trên batch.
         """
         # probabilities: Tensor = F.softmax(logits, dim=-1 ) # (N, num_actions)
-        selected_logits: Tensor = torch.gather(logits, 1, action.unsqueeze(1).long()).sigmoid() # (N, 1)
-        loss: Tensor = self.ratio * F.l1_loss(selected_logits, reward, reduction=self.reduction) + \
-                (1 - self.ratio) * F.binary_cross_entropy(selected_logits, reward, reduction=self.reduction)
+        selected_logits: Tensor = torch.gather(logits, 1, action.unsqueeze(1).long()) # (N, 1)
+        if self.ratio == 0:
+            loss: Tensor = F.binary_cross_entropy_with_logits(selected_logits, reward, reduction=self.reduction)
+        elif self.ratio == 1:
+            loss: Tensor =  F.l1_loss(selected_logits.sigmoid(), reward, reduction=self.reduction)
+        else:
+            loss: Tensor = self.ratio * F.l1_loss(selected_logits.sigmoid(), reward, reduction=self.reduction) + \
+                (1 - self.ratio) * F.binary_cross_entropy_with_logits(selected_logits, reward, reduction=self.reduction)
         return loss
