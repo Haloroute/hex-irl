@@ -97,7 +97,7 @@ def main():
     # Model and actor
     base_model = Conv(**MODEL_PARAMS)
     model = HexModelV2(base_model)
-    model_wrapper = ModelWrapper(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
+    model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
     init_params(model)
     network = TensorDictModule(
         model_wrapper,

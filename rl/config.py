@@ -30,7 +30,7 @@ N_CHANNEL = 3  # Number of input channels (Red, Blue, Swap Rule)
 # ---------------------------------
 MODEL_PARAMS = {
     "board_size": BOARD_SIZE,
-    "conv_layers": [(64, 3)] * 16,  # List of (out_channels, kernel_size) tuples
+    "conv_layers": [(64, 3)] * 18,  # List of (out_channels, kernel_size) tuples
     "n_encoder_layers": 0,  # Number of transformer encoder layers
     "d_input": N_CHANNEL,  # Input feature dimension
     "n_heads": 4,  # Number of attention heads
