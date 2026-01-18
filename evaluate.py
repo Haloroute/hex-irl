@@ -13,11 +13,11 @@ from torchrl.envs.transforms import ActionMask
 from torchrl.modules import ProbabilisticActor, MaskedCategorical
 
 from rl.environment import HexEnv
-from rl.model.network import HexModel
+from rl.model.v1.network import HexModel
 from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
 from rl.policy.mcts import MCTSPolicy
 from rl.policy.random import MaskedRandomPolicy
-from rl.policy.wrapper import ModelWrapper
+from rl.policy.v1.wrapper import ModelWrapper
 from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.utility import evaluate_agent, init_params
 from rl.config import (
@@ -97,7 +97,7 @@ def main():
     # Model and actor
     base_model = Conv(**MODEL_PARAMS)
     model = HexModelV2(base_model)
-    model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
+    model_wrapper = ModelWrapper(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
     init_params(model)
     network = TensorDictModule(
         model_wrapper,

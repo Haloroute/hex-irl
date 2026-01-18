@@ -190,7 +190,7 @@ class HexEnv(EnvBase):
         fresh_observation[..., 1] = (board == 1).float() # Blue pieces channel
         fresh_observation[..., 2] = current_player # 0: player 0 (red), 1: player 1 (blue)
         fresh_observation[..., 3] = self.valid_board.clone().float() # (max_board_size, max_board_size) Playable board mask
-        fresh_observation[..., 4] = self.swap_rule * 1.0 # Swap rule indicator channel
+        fresh_observation[..., 4] = 0.0 # Swap rule indicator channel (always 0 at start)
         fresh_action_mask: Tensor = self.valid_board.clone().bool().flatten() # (max_board_size ** 2,) Valid move mask
         fresh_done: Tensor = done # Not done
         fresh_terminated: Tensor = terminated # Not done
@@ -254,7 +254,13 @@ class HexEnv(EnvBase):
             next_terminated = torch.tensor([False], dtype=torch.bool, device=self.device)
             current_player = 1 - current_player
 
-        swap_available_next = bool(self.swap_rule and (total_stones == 0) and not next_done) # Update swap availability for next state
+        # ✅ SỬA: Swap available when exactly 1 stone exists
+        swap_available_next = bool(
+            self.swap_rule
+            and total_stones == 0 # 0 stone before this move
+            and not swap_action
+            and not next_done
+        )
         next_observation[..., 2] = float(current_player)
         next_observation[..., 4] = float(swap_available_next)
 

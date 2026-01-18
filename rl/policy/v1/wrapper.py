@@ -7,6 +7,17 @@ from tensordict.utils import NestedKey
 from torchrl.data import Composite, TensorSpec
 from torch import Tensor
 
+from rl.config import (
+    DEVICE, STORAGE_DEVICE,
+    BOARD_SIZE, MAX_BOARD_SIZE, SWAP_RULE, N_CHANNEL,
+    MODEL_PARAMS, BUFFER_SIZE, MAX_N_STEPS, N_SAMPLES_PER_EPOCH, N_EPISODES_PER_EPOCH, N_TRAINING_ROUNDS_PER_EPOCH, N_MEMMAP_CHUNKS,
+    INITIAL_TEMPERATURE, FINAL_TEMPERATURE, DECAY_RATE,
+    N_EPOCHS, BATCH_SIZE, LR, WEIGHT_DECAY,
+    TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
+    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, PAST_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
+    CHECKPOINT_DIR, RESULTS_DIR
+)
+
 
 class ModelWrapper(nn.Module):
     """
@@ -19,13 +30,13 @@ class ModelWrapper(nn.Module):
         self.board_size = board_size
         self.temperature = temperature
         
-        # Tạo board_border với kích thước (H+2, W+2, 2)
+        # Tạo board_border với kích thước (H+2, W+2, 3)
         # Tất cả các ô đều là 0, ngoại trừ:
         # - Hàng đầu tiên và cuối cùng (kênh 0)
         # - Cột đầu tiên và cuối cùng (kênh 1)
         # - 4 góc luôn bằng 0
         H, W = board_size, board_size
-        board_border = torch.zeros(H + 2, W + 2, 2)
+        board_border = torch.zeros(H + 2, W + 2, N_CHANNEL)
         
         # Kênh 0: hàng đầu tiên và cuối cùng (trừ góc)
         board_border[0, 1:-1, 0] = 1.0      # Hàng đầu tiên (trừ góc)
@@ -35,7 +46,8 @@ class ModelWrapper(nn.Module):
         board_border[1:-1, 0, 1] = 1.0      # Cột đầu tiên (trừ góc)
         board_border[1:-1, -1, 1] = 1.0     # Cột cuối cùng (trừ góc)
         
-        self.register_buffer('board_border', board_border)
+        # self.register_buffer('board_border', board_border)
+        self.board_border = board_border  # Không dùng register_buffer để tránh lỗi khi save/load model
 
     def forward(self, observation: Tensor, action_mask: Tensor | None = None) -> tuple[Tensor, Tensor]:
         device = next(self.model.parameters()).device
@@ -55,8 +67,8 @@ class ModelWrapper(nn.Module):
         # 1. Xác định Player 1 (Blue)
         player_mask = (observation[:, 0, 0, 2] > 0.5)  # (N,)
 
-        # 2. Chỉ giữ lại 2 kênh đầu tiên
-        observation_input = observation[..., :2].clone()  # (N, H, W, 2)
+        # 2. Chỉ giữ lại 2 kênh đầu tiênvà kênh thứ 4 (kênh swap rule)
+        observation_input = observation[..., [0, 1, 4]].clone()  # (N, H, W, 3)
 
         # 3. Canonicalize cho Player 1
         if player_mask.any():
@@ -66,12 +78,12 @@ class ModelWrapper(nn.Module):
             observation_input[player_mask, ..., 0] = b
             observation_input[player_mask, ..., 1] = r
 
-        # 4. Padding với board_border: (N, H, W, 2) -> (N, H+2, W+2, 2)
-        padded = self.board_border.unsqueeze(0).expand(N, -1, -1, -1).clone()  # (N, H+2, W+2, 2)
+        # 4. Padding với board_border: (N, H, W, 3) -> (N, H+2, W+2, 3)
+        padded = self.board_border.unsqueeze(0).expand(N, -1, -1, -1).to(device)  # (N, H+2, W+2, 3)
         padded[:, 1:-1, 1:-1, :] = observation_input  # Chèn observation vào giữa
         
-        # 5. Chuyển sang format (N, C, H, W) cho Conv2d
-        padded = padded.permute(0, 3, 1, 2).contiguous()  # (N, 2, H+2, W+2)
+        # # 5. Chuyển sang format (N, C, H, W) cho Conv2d
+        # padded = padded.permute(0, 3, 1, 2).contiguous()  # (N, 3, H+2, W+2)
 
         # 6. Chạy Model
         logits: Tensor = self.model(padded)  # (N, H*W)
@@ -88,7 +100,7 @@ class ModelWrapper(nn.Module):
         logits = logits.reshape(N, -1)  # (N, H*W)
         
         # Apply temperature: với xác suất = temperature, cộng 1000 vào 1 logit ngẫu nhiên của 1 sample
-        if self.temperature > 1e-6 and torch.rand(1, device=logits.device).item() < self.temperature:
+        if not torch.rand(1, device=logits.device).item() >= self.temperature:
             num_actions = logits.shape[1]
             
             # Chọn random 1 sample trong batch

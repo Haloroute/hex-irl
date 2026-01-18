@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 from torch import Tensor
 
-from rl.model.submodules import HexConv2d, SkipConnection, TriAxialPositionalEmbedding
+from rl.model.v1.submodules import HexConv2d, SkipConnection, TriAxialPositionalEmbedding
 
 
 class HexModel(nn.Module):

@@ -31,11 +31,11 @@ from tqdm.auto import tqdm
 from rl.dataloader import HexDataCollector, HexRolloutDataset
 from rl.environment import HexEnv
 from rl.loss import SimpleLoss
-from rl.model.network import HexModel
+from rl.model.v1.network import HexModel
 from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
 from rl.policy.mcts import MCTSPolicy
 from rl.policy.random import MaskedRandomPolicy
-from rl.policy.wrapper import ModelWrapper
+from rl.policy.v1.wrapper import ModelWrapper
 from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.utility import (
     init_params,
@@ -51,7 +51,7 @@ from rl.config import (
     INITIAL_TEMPERATURE, FINAL_TEMPERATURE, DECAY_RATE,
     N_EPOCHS, BATCH_SIZE, LR, WEIGHT_DECAY,
     TOTAL_FRAMES, WARMUP_FRAMES, OPTIMIZATION_STEPS, GAMMA, TAU, GRAD_CLIP_NORM,
-    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, PAST_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, MCTS_ITERMAX,
+    LOG_INTERVAL, RANDOM_EVAL_INTERVAL, PAST_EVAL_INTERVAL, MCTS_EVAL_INTERVAL, EVAL_GAMES, EVAL_EVERY_EPOCHS, MCTS_ITERMAX,
     CHECKPOINT_DIR, RESULTS_DIR
 )
 
@@ -302,39 +302,43 @@ def training_loop(
         # print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
         # Set temperature to negative for evaluation (to disable random logit boost)
-        network.module.temperature *= -1
-        # Evaluate against random policy
-        eval_results = evaluate_agent(
-            actor, random_policy,
-            device_0=DEVICE, device_1=STORAGE_DEVICE,
-            env=environment, n_games=EVAL_GAMES
-        )
-        # Restore temperature back (multiply -1 again to get original)
-        network.module.temperature *= -1
+        if epoch % EVAL_EVERY_EPOCHS == 0: # Evaluate every N epochs
+            network.module.temperature *= -1
+            # Evaluate against random policy
+            eval_results = evaluate_agent(
+                actor, random_policy,
+                device_0=DEVICE, device_1=STORAGE_DEVICE,
+                env=environment, n_games=EVAL_GAMES
+            )
+            # Restore temperature back (multiply -1 again to get original)
+            network.module.temperature *= -1
 
-        win_rate = eval_results['win_rate']
-        training_history['win_rate']['random'].append(win_rate)
+            win_rate = eval_results['win_rate']
+            training_history['win_rate']['random'].append(win_rate)
 
-        print("Evaluation against Random Policy:")
-        print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
-        print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
-        print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
+            print("Evaluation against Random Policy:")
+            print(f"WinRate: {win_rate:.1%} ({eval_results['total_wins']}/{eval_results['total_games']})")
+            print(f"  - As P0: {eval_results['wins_as_p0']}/{eval_results['games_as_p0']}")
+            print(f"  - As P1: {eval_results['wins_as_p1']}/{eval_results['games_as_p1']}")
 
-        # Save checkpoint
-        checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_e{epoch}.pt"
-        torch.save({
-            'epoch': epoch,
-            'state_dict': network.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'win_rate': win_rate,
-            'training_history': training_history
-        }, checkpoint_path)
+            # Save checkpoint
+            checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_e{epoch}.pt"
+            torch.save({
+                'epoch': epoch,
+                'state_dict': network.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'win_rate': win_rate,
+                'training_history': training_history
+            }, checkpoint_path)
 
-        print(f"✓ Checkpoint Saved! (WinRate: {win_rate:.1%})")
-        print(f"{'='*60}\n")
+            print(f"✓ Checkpoint Saved! (WinRate: {win_rate:.1%})")
+            print(f"{'='*60}\n")
 
-        # NEW: export plots after each epoch
-        plot_training_curves(training_history)
+            # NEW: export plots after each epoch
+            plot_training_curves(training_history)
+
+        else:
+            training_history['win_rate']['random'].append(None if len(training_history['win_rate']['random']) == 0 else training_history['win_rate']['random'][-1])
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETED")
@@ -437,6 +441,7 @@ def main():
     # 2. Create models, wrapper, and policy
     base_model = Conv(**MODEL_PARAMS)
     model = HexModelV2(base_model)
+    # model = HexModel(**MODEL_PARAMS)
     model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=INITIAL_TEMPERATURE).train().to(DEVICE)
     init_params(model)
     network = TensorDictModule(

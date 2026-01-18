@@ -19,9 +19,9 @@ from torchrl.modules import ProbabilisticActor, MaskedCategorical
 
 # Import custom modules
 from rl.environment import HexEnv
-from rl.model.network import HexModel
+from rl.model.v1.network import HexModel
 from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
-from rl.policy.wrapper import ModelWrapper
+from rl.policy.v1.wrapper import ModelWrapper
 from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.ui import UI
 from rl.config import (
@@ -78,6 +78,7 @@ class HexGamePlayer:
         # Create actor model
         base_model = Conv(**MODEL_PARAMS).train().to(DEVICE)
         model = HexModelV2(base_model).train().to(DEVICE)
+        # model = HexModel(**MODEL_PARAMS)
         model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
         network = TensorDictModule(
             model_wrapper,

@@ -255,18 +255,24 @@ class HexRolloutDataset(Dataset):
                 print(f"Removing old memmap chunk: {full_path}")
                 shutil.rmtree(full_path, ignore_errors=True)
 
-        # Load memmap chunks
-        data_list: list[TensorDict] = []
+        # Load memmap chunks and split each chunk
+        train_chunks: list[TensorDict] = []
+        val_chunks: list[TensorDict] = []
+
         for folder in folders[:n_memmap_chunks]:
             full_path = os.path.join(self.data_path, folder)
-            data_list.append(TensorDict.load_memmap(full_path))
-        self.data: TensorDict = torch.cat(data_list, dim=0)
+            chunk_data = TensorDict.load_memmap(full_path)
 
-        # For training, use only 80% of data
+            # Split this chunk: 80% train, 20% val
+            split_idx = int(len(chunk_data) * 0.8)
+            train_chunks.append(chunk_data[:split_idx])
+            val_chunks.append(chunk_data[split_idx:])
+
+        # Concatenate all chunks
         if self.train:
-            self.data = self.data[-int(len(self.data) * 0.8):]
+            self.data = torch.cat(train_chunks, dim=0)
         else:
-            self.data = self.data[:int(len(self.data) * 0.2)]
+            self.data = torch.cat(val_chunks, dim=0)
         
     def __len__(self) -> int:
         return len(self.data)

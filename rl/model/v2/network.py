@@ -56,7 +56,7 @@ class Conv(nn.Module):
         last_padding = (last_kernel - 1) // 2
         self.activation = nn.SiLU()
         self.projection = nn.Conv2d(last_channels, 1, kernel_size=last_kernel, padding=last_padding, bias=False)
-        self.bias = nn.Parameter(torch.zeros(board_size ** 2))
+        # self.bias = nn.Parameter(torch.zeros(board_size ** 2))
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -68,7 +68,7 @@ class Conv(nn.Module):
         """
         x = self.activation(self.conv(x))
         x = self.skip_layers(x)
-        x = self.projection(x).view(-1, self.board_size ** 2) + self.bias
+        x = self.projection(x).view(-1, self.board_size ** 2)
         if self.output_flatten:
             return x
         else:
