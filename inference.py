@@ -19,8 +19,10 @@ from torchrl.modules import ProbabilisticActor, MaskedCategorical
 
 # Import custom modules
 from rl.environment import HexEnv
-from rl.model.network import HexModel
-from rl.policy.wrapper import ActorWrapper
+from rl.model.v1.network import HexModel
+from rl.model.v2.network import Conv, RotationWrapperModel as HexModelV2
+from rl.policy.v1.wrapper import ModelWrapper
+from rl.policy.v2.wrapper import ModelWrapper as ModelWrapperV2
 from rl.ui import UI
 from rl.config import (
     DEVICE, STORAGE_DEVICE, BOARD_SIZE,
@@ -57,13 +59,15 @@ class HexGamePlayer:
         )
         
         # Load AI model
-        self.actor = self._load_model(checkpoint_path)
+        self.actor, self.model_wrapper = self._load_model(checkpoint_path)
         
         # Game state
         self.current_tensordict: TensorDict = None
         self.human_first: bool = human_first
         self.current_player: int = 0 if human_first else 1  # 0 = Red (Human), 1 = Blue (AI)
         self.game_over: bool = False
+        self.ai_logits: dict = {}  # Store logits from AI's turn
+        self.show_ai_logits: bool = False  # Flag to show AI logits after AI moves
         
     def _load_model(self, checkpoint_path: str):
         """Load trained model from checkpoint."""
@@ -72,16 +76,17 @@ class HexGamePlayer:
         print("=" * 60)
         
         # Create actor model
-        actor_model = HexModel(**MODEL_PARAMS).eval().to(DEVICE)
-        
-        actor_network = TensorDictModule(
-            ActorWrapper(actor_model),
+        base_model = Conv(**MODEL_PARAMS).train().to(DEVICE)
+        model = HexModelV2(base_model).train().to(DEVICE)
+        # model = HexModel(**MODEL_PARAMS)
+        model_wrapper = ModelWrapperV2(model, board_size=BOARD_SIZE, temperature=0).train().to(DEVICE)
+        network = TensorDictModule(
+            model_wrapper,
             in_keys=["observation", "action_mask"],
             out_keys=["logits", "mask"]
         )
-        
         actor = ProbabilisticActor(
-            actor_network,
+            network,
             in_keys=["logits", "mask"],
             spec=self.env.action_spec,
             distribution_class=MaskedCategorical
@@ -89,14 +94,35 @@ class HexGamePlayer:
         
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-        actor.module[0].model.load_state_dict(checkpoint['actor_state_dict'])
+        network.load_state_dict(checkpoint['state_dict'])
         
         print(f"✓ Model loaded from: {checkpoint_path}")
         print(f"  Win Rate: {checkpoint['win_rate']:.1%}")
-        print(f"  Iteration: {checkpoint['iteration']}")
+        print(f"  Epoch: {checkpoint['epoch']}")
         print("=" * 60)
         
-        return actor
+        return actor, model_wrapper
+
+    def _calculate_ai_logits(self):
+        """Calculate pre-sigmoid logits for AI's possible moves (at AI's turn)."""
+        self.ai_logits = {}
+        available_moves = self._get_available_moves()
+        
+        if not available_moves or self.game_over:
+            return
+        
+        with torch.no_grad():
+            # Get current observation and action mask
+            observation = self.current_tensordict['observation'].clone().to(DEVICE)
+            action_mask = self.current_tensordict['action_mask'].clone().to(DEVICE)
+            
+            # Get logits from model (before any normalization)
+            logits, _ = self.model_wrapper(observation, action_mask)
+            logits = logits.squeeze().cpu().numpy()
+            
+            # Store logits for available moves
+            for move in available_moves:
+                self.ai_logits[move] = logits[move]
     
     # def _node_to_action(self, node: int) -> int:
     #     """Convert UI node index to action index."""
@@ -125,7 +151,36 @@ class HexGamePlayer:
                     self.ui.color[node] = self.ui.blue
                 else:
                     self.ui.color[node] = self.ui.white
-    
+
+    def _draw_logits_on_board(self):
+        """Draw pre-sigmoid logits on available cells (from AI's perspective)."""
+        if not self.ai_logits or not self.show_ai_logits:
+            return
+        
+        # Create a smaller font for the logit values
+        small_font = pygame.font.SysFont("Arial", 12)
+        
+        for node, logit in self.ai_logits.items():
+            row = node // self.board_size
+            col = node % self.board_size
+            
+            # Get the center position of the hex cell
+            x, y = self.ui.get_coordinates(row, col)
+            
+            # Format the logit value (1 decimal place)
+            logit_text = f"{logit:.1f}"
+            
+            # Choose color based on logit value (positive = green, negative = red)
+            if logit > 0:
+                text_color = (0, 150, 0)  # Dark green
+            else:
+                text_color = (150, 0, 0)  # Dark red
+            
+            # Render and draw the text
+            text_surface = small_font.render(logit_text, True, text_color)
+            text_rect = text_surface.get_rect(center=(x, y))
+            self.ui.screen.blit(text_surface, text_rect)
+
     def _get_available_moves(self) -> list:
         """Get list of available moves (empty cells)."""
         action_mask = self.current_tensordict['action_mask'].squeeze().numpy(force=True)
@@ -143,6 +198,9 @@ class HexGamePlayer:
                 clicked_node = self.ui.get_node_click()
 
                 if clicked_node is not None and clicked_node in available_moves:
+                    # Valid move - clear AI logits display when human makes a move
+                    self.show_ai_logits = False
+                    self.ai_logits = {}
                     # Valid move
                     self._execute_action(clicked_node)
                     return "move_made"
@@ -151,10 +209,17 @@ class HexGamePlayer:
 
     def _ai_turn(self):
         """Handle AI player's turn."""
+        # Calculate and store logits before AI moves
+        self._calculate_ai_logits()
+        
         # Get AI action
-        with torch.no_grad():
+        with torch.no_grad(), set_exploration_type(ExplorationType.DETERMINISTIC):
             action_tensordict = self.actor(self.current_tensordict.to(DEVICE))
             action = action_tensordict['action'].item()
+
+        # Keep the chosen action in displayed logits (don't delete it)
+        # Enable showing AI logits after AI moves
+        self.show_ai_logits = True
 
         # Execute action
         self._execute_action(action)
@@ -178,9 +243,9 @@ class HexGamePlayer:
     def _show_game_result(self, winner: int):
         """Display game result."""
         print("\n" + "=" * 60)
-        if self.human_first and winner == 1 or not self.human_first and winner == 0:
+        if self.human_first and winner == 0 or not self.human_first and winner == 1:
             print(f"🎉 HUMAN WINS! ({'Red' if self.human_first else 'Blue'})")
-        elif self.human_first and winner == 0 or not self.human_first and winner == 1:
+        elif self.human_first and winner == 1 or not self.human_first and winner == 0:
             print(f"🤖 AI WINS! ({'Blue' if self.human_first else 'Red'})")
         else:
             print("DRAW!")
@@ -189,8 +254,10 @@ class HexGamePlayer:
     def reset_game(self):
         """Reset game to initial state."""
         self.current_tensordict: TensorDict = self.env.reset()
-        self.current_player = 0 if self.human_first else 1  # Red (Human) starts
+        self.current_player = 0
         self.game_over = False
+        self.ai_logits = {}  # Clear AI logits
+        self.show_ai_logits = False  # Reset flag
 
         # Reset UI colors
         for i in range(self.board_size ** 2):
@@ -209,7 +276,6 @@ class HexGamePlayer:
     def play(self):
         """Main game loop."""
         self.reset_game()
-        set_exploration_type(ExplorationType.DETERMINISTIC)
         running = True
         while running:
             # Update UI from observation
@@ -217,15 +283,21 @@ class HexGamePlayer:
 
             # Draw board
             self.ui.draw_board()
+            
+            # Draw logits on available cells
+            self._draw_logits_on_board()
 
             if not self.game_over:
                 # Show whose turn it is
-                turn_text = "Your Turn (Red)" if self.current_player == 0 else "AI Thinking... (Blue)"
+                if self.human_first:
+                    turn_text = "Your Turn (Red)" if self.current_player == 0 else "AI Thinking... (Blue)"
+                else:
+                    turn_text = "Your Turn (Blue)" if self.current_player == 1 else "AI Thinking... (Red)"
                 text_surface = self.ui.fonts.render(turn_text, True, self.ui.white)
                 self.ui.screen.blit(text_surface, (10, 10))
 
                 # Handle turns
-                if self.current_player == 0:  # Human turn
+                if self.current_player ^ self.human_first:  # Human turn
                     result = self._human_turn()
                     if result == "quit":
                         running = False
@@ -257,20 +329,31 @@ def main():
     print("HEX GAME - HUMAN VS AI")
     print("=" * 60)
     
-    # Find best checkpoint
     checkpoint_dir = Path(CHECKPOINT_DIR)
-    checkpoint_path = checkpoint_dir / f"hex_{BOARD_SIZE}x{BOARD_SIZE}_best.pth"
-    
-    if not checkpoint_path.exists():
-        print(f"❌ Checkpoint not found: {checkpoint_path}")
+    pattern = f"hex_{BOARD_SIZE}x{BOARD_SIZE}_*.pt"
+    best_path, best_epoch = None, -1
+    for path in checkpoint_dir.glob(pattern):
+        try:
+            data = torch.load(path, map_location="cpu")
+            epoch = data.get("epoch", -1)
+            if epoch > best_epoch:
+                best_epoch, best_path = epoch, path
+        except Exception:
+            continue
+
+    if not best_path:
+        print(f"❌ No checkpoints found in: {checkpoint_dir}")
         print("Please train a model first using train.py")
         return
-    
+
+    print(f"Using checkpoint with highest epoch ({best_epoch}): {best_path}")
+
     # Create game player
+    human_first = input("Is the human player going first? (y/n): ").strip().lower() != 'n'
     game = HexGamePlayer(
-        checkpoint_path=str(checkpoint_path),
+        checkpoint_path=str(best_path),
         board_size=BOARD_SIZE,
-        human_first=True
+        human_first=human_first
     )
     
     # Start playing

@@ -154,6 +154,7 @@ class HexEnv(EnvBase):
         self.action_spec = Categorical(
             n=self.max_board_size ** 2,
             # Number of discrete actions for each side of the board
+            # shape=(1,),
             device=self.device,
             dtype=torch.long
         )
@@ -183,19 +184,19 @@ class HexEnv(EnvBase):
         terminated: Tensor = torch.tensor([False], dtype=torch.bool, device=self.device) # Game not done
 
         # Create fresh observation, mask, done, reward
-        fresh_action: Tensor = torch.tensor([0], dtype=torch.long, device=self.device) # Placeholder action
+        # fresh_action: Tensor = torch.tensor(0, dtype=torch.long, device=self.device) # Placeholder action
         fresh_observation: Tensor = torch.zeros((self.max_board_size, self.max_board_size, self.n_channel), dtype=torch.float32, device=self.device) # (max_board_size, max_board_size, n_channel)
         fresh_observation[..., 0] = (board == 0).float() # Red pieces channel
         fresh_observation[..., 1] = (board == 1).float() # Blue pieces channel
         fresh_observation[..., 2] = current_player # 0: player 0 (red), 1: player 1 (blue)
         fresh_observation[..., 3] = self.valid_board.clone().float() # (max_board_size, max_board_size) Playable board mask
-        fresh_observation[..., 4] = self.swap_rule * 1.0 # Swap rule indicator channel
+        fresh_observation[..., 4] = 0.0 # Swap rule indicator channel (always 0 at start)
         fresh_action_mask: Tensor = self.valid_board.clone().bool().flatten() # (max_board_size ** 2,) Valid move mask
         fresh_done: Tensor = done # Not done
         fresh_terminated: Tensor = terminated # Not done
 
         fresh_tensordict: TensorDict = TensorDict({
-            "action": fresh_action,
+            # "action": fresh_action,
             "observation": fresh_observation,
             "action_mask": fresh_action_mask,
             "done": fresh_done,
@@ -253,7 +254,13 @@ class HexEnv(EnvBase):
             next_terminated = torch.tensor([False], dtype=torch.bool, device=self.device)
             current_player = 1 - current_player
 
-        swap_available_next = bool(self.swap_rule and (total_stones == 0) and not next_done) # Update swap availability for next state
+        # ✅ SỬA: Swap available when exactly 1 stone exists
+        swap_available_next = bool(
+            self.swap_rule
+            and total_stones == 0 # 0 stone before this move
+            and not swap_action
+            and not next_done
+        )
         next_observation[..., 2] = float(current_player)
         next_observation[..., 4] = float(swap_available_next)
 

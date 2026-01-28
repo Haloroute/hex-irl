@@ -1,9 +1,11 @@
+import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 
 from torch import Tensor
 
-from rl.model.submodules import HexConv2d, SkipConnection, TriAxialPositionalEmbedding
+from rl.model.v1.submodules import HexConv2d, SkipConnection, TriAxialPositionalEmbedding
 
 
 class HexModel(nn.Module):
@@ -14,7 +16,8 @@ class HexModel(nn.Module):
                  n_heads: int = 8,
                  d_ff: int = 2048,
                  dropout: float = 0.1,
-                 output_flatten: bool = True):
+                 output_flatten: bool = True,
+                 **kwargs):
         """Args:
             conv_layers: List of tuples (out_channels, kernel_size) for each conv layer.
                 Note that, in_channels is inferred from the previous layer's out_channels (d_input for the first layer).
@@ -25,7 +28,9 @@ class HexModel(nn.Module):
             dropout: Dropout rate.
         """
         super(HexModel, self).__init__()
+        self.device = torch.device('cpu')
         self.output_flatten = output_flatten
+        self.use_attention = n_encoder_layers > 0
         self.d_encoder: int = conv_layers[-1][0] # Last conv layer's out_channels as d_model
         self.conv = nn.Sequential(*[
             SkipConnection(
@@ -44,18 +49,19 @@ class HexModel(nn.Module):
             )
             for i in range(len(conv_layers))
         ])
-        self.positional_embedding = TriAxialPositionalEmbedding(self.d_encoder)
-        self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=self.d_encoder,
-                nhead=n_heads,
-                dim_feedforward=d_ff,
-                dropout=dropout,
-                activation='gelu',
-                batch_first=True
-            ),
-            num_layers=n_encoder_layers
-        )
+        if self.use_attention:
+            self.positional_embedding = TriAxialPositionalEmbedding(self.d_encoder)
+            self.encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=self.d_encoder,
+                    nhead=n_heads,
+                    dim_feedforward=d_ff,
+                    dropout=dropout,
+                    activation='gelu',
+                    batch_first=True
+                ),
+                num_layers=n_encoder_layers
+            )
         self.projection = nn.Linear(self.d_encoder, 1) # Đầu ra cho Actor (logits)/Critic (Q-value)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -70,17 +76,23 @@ class HexModel(nn.Module):
         elif len(x.shape) != 4:
             raise ValueError(f"Input tensor x must have shape (N, H, W, C) or (H, W, C), but got {x.shape}.")
 
+        # 0. Get padding mask
+        mask = (x[..., 2] == 0)  # (N, H, W)  # Giả sử kênh 2 là kênh board hợp lệ
+        flatten_mask = mask.flatten(1)  # (N, H*W)
+
         # 1. Convolutional layers
         batch_size, height, width = x.size(0), x.size(1), x.size(2)
         x = x.permute(0, 3, 1, 2).contiguous() # (N, C, H, W)
         x = self.conv(x) # (N, d_encoder, H, W)
 
         # 2. Positional Embedding + Transformer Encoder
-        # x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous()
-        x = x.permute(0, 2, 3, 1).contiguous()
-        pe: Tensor = self.positional_embedding(x)
-        x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
-        x = self.encoder(x) # (N, H*W, d_encoder)
+        if self.use_attention:
+            x = x.permute(0, 2, 3, 1).contiguous() # (N, H, W, d_encoder)
+            pe: Tensor = self.positional_embedding(x)
+            x = (x + pe).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
+            x = self.encoder(x, src_key_padding_mask=flatten_mask) # (N, H*W, d_encoder)
+        else:
+            x = x.permute(0, 2, 3, 1).flatten(1, 2).contiguous() # (N, H*W, d_encoder)
 
         # Chỉ sử dụng khi sử dụng vmap của DiscreteSACLOss (deactivate_vmap=False)
         # Nếu không dùng vmap thì không cần thiết (do giảm hiệu suất).
@@ -90,6 +102,12 @@ class HexModel(nn.Module):
         # 3. Projection to create outputs for Actor/Critic
         x = self.projection(x) # (N, H*W, 1)
         if self.output_flatten:
-            return x.view(batch_size, -1) # (N, H*W)
+            return x.reshape(batch_size, -1) # (N, H*W)
         else:
-            return x.view(batch_size, height, width) # (N, H, W)
+            return x.reshape(batch_size, height, width) # (N, H, W)
+        
+    def to(self, device: torch.device | str) -> 'HexModel':
+        """Chuyển model và các submodule sang device chỉ định."""
+        super().to(device)
+        self.device = device
+        return self
