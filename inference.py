@@ -254,7 +254,7 @@ class HexGamePlayer:
     def reset_game(self):
         """Reset game to initial state."""
         self.current_tensordict: TensorDict = self.env.reset()
-        self.current_player = 0 if self.human_first else 1  # Red (Human) starts
+        self.current_player = 0
         self.game_over = False
         self.ai_logits = {}  # Clear AI logits
         self.show_ai_logits = False  # Reset flag
@@ -289,12 +289,15 @@ class HexGamePlayer:
 
             if not self.game_over:
                 # Show whose turn it is
-                turn_text = "Your Turn (Red)" if self.current_player == 0 else "AI Thinking... (Blue)"
+                if self.human_first:
+                    turn_text = "Your Turn (Red)" if self.current_player == 0 else "AI Thinking... (Blue)"
+                else:
+                    turn_text = "Your Turn (Blue)" if self.current_player == 1 else "AI Thinking... (Red)"
                 text_surface = self.ui.fonts.render(turn_text, True, self.ui.white)
                 self.ui.screen.blit(text_surface, (10, 10))
 
                 # Handle turns
-                if self.current_player == 0:  # Human turn
+                if self.current_player ^ self.human_first:  # Human turn
                     result = self._human_turn()
                     if result == "quit":
                         running = False
